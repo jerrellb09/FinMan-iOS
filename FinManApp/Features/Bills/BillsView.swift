@@ -1,21 +1,26 @@
+import SwiftData
 import SwiftUI
 
 struct BillsView: View {
-    @Environment(AppModel.self) private var model
+    @Environment(\.modelContext) private var context
+    @Environment(AppState.self) private var state
+    @Query private var allBills: [Bill]
+    @AppStorage(ProfileKey.monthlyIncome) private var monthlyIncome = 0.0
     @State private var editing: Bill?
     @State private var showNew = false
     @State private var showPaid = true
     @State private var toggled = 0
 
-    private var unpaid: [Bill] { model.bills.filter { !$0.isPaid } }
-    private var paid: [Bill] { model.bills.filter(\.isPaid) }
-    private var monthlyTotal: Double { model.bills.reduce(0) { $0 + $1.amount.doubleValue } }
-    private var paidTotal: Double { paid.reduce(0) { $0 + $1.amount.doubleValue } }
+    private var bills: [Bill] { allBills.sorted { $0.daysUntilDue() < $1.daysUntilDue() } }
+    private var unpaid: [Bill] { bills.filter { !$0.isPaid } }
+    private var paid: [Bill] { bills.filter(\.isPaid) }
+    private var monthlyTotal: Double { bills.reduce(0) { $0 + $1.amount } }
+    private var paidTotal: Double { paid.reduce(0) { $0 + $1.amount } }
 
     var body: some View {
         NavigationStack {
             List {
-                if model.bills.isEmpty {
+                if bills.isEmpty {
                     EmptyStateView(emoji: "📅", title: "No bills yet",
                                    message: "Add rent, subscriptions and utilities so you never miss a due date.",
                                    actionTitle: "Add a bill") { showNew = true }
@@ -28,7 +33,7 @@ struct BillsView: View {
                     }
 
                     if !unpaid.isEmpty {
-                        Section("To pay · \(unpaid.reduce(0) { $0 + $1.amount.doubleValue }.currency())") {
+                        Section("To pay · \(unpaid.reduce(0) { $0 + $1.amount }.currency())") {
                             ForEach(unpaid) { row($0) }
                         }
                     } else {
@@ -50,7 +55,6 @@ struct BillsView: View {
                 }
             }
             .listStyle(.insetGrouped)
-            .refreshable { await model.loadBills() }
             .navigationTitle("Bills")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -73,13 +77,13 @@ struct BillsView: View {
                     Text(monthlyTotal.currency()).font(.system(.title, design: .rounded).bold()).monospacedDigit()
                 }
                 Spacer()
-                Text("\(paid.count)/\(model.bills.count) paid").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.income)
+                Text("\(paid.count)/\(bills.count) paid").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.income)
             }
             ProgressCapsule(progress: progress, warning: 2, height: 12)
-            if let insight = model.billsVsIncome, insight.monthlyIncome > 0 {
+            if monthlyIncome > 0 {
                 HStack(spacing: 6) {
                     Image(systemName: "chart.bar.fill").foregroundStyle(Theme.brand)
-                    Text("Bills are \(insight.billPercentage.doubleValue / 100, format: .percent.precision(.fractionLength(0))) of your income · \(insight.remainingIncome.currency()) left after bills")
+                    Text("Bills are \(monthlyTotal / monthlyIncome, format: .percent.precision(.fractionLength(0))) of your income · \((monthlyIncome - monthlyTotal).currency()) left after bills")
                 }
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
@@ -100,17 +104,20 @@ struct BillsView: View {
             }
             .swipeActions(edge: .trailing) {
                 Button(role: .destructive) {
-                    Task { do { try await model.deleteBill(bill) } catch { model.lastError = error.localizedDescription } }
+                    withAnimation { context.delete(bill) }
+                    try? context.save()
                 } label: { Label("Delete", systemImage: "trash") }
             }
     }
 
     private func toggle(_ bill: Bill) {
-        Task {
-            do {
-                try await model.togglePaid(bill)
-                toggled += 1
-            } catch { model.lastError = error.localizedDescription }
+        let nowPaid = !bill.isPaid
+        withAnimation(.bouncy) { bill.setPaid(nowPaid) }
+        try? context.save()
+        toggled += 1
+        if nowPaid {
+            state.celebrate()
+            if unpaid.isEmpty { state.celebrate() }
         }
     }
 }
@@ -131,7 +138,7 @@ struct BillRow: View {
             .buttonStyle(.plain)
             .accessibilityLabel(bill.isPaid ? "Mark unpaid" : "Mark paid")
 
-            CategoryIcon(name: bill.categoryName ?? bill.name, size: 38)
+            CategoryIcon(name: bill.category?.name ?? bill.name, size: 38)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(bill.name).font(.subheadline.weight(.semibold))
@@ -168,17 +175,17 @@ struct BillRow: View {
 }
 
 struct BillEditor: View {
-    @Environment(AppModel.self) private var model
+    @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
+    @Query(sort: \Category.sortOrder) private var categories: [Category]
     let bill: Bill?
 
     @State private var name = ""
     @State private var amount: Double?
     @State private var dueDay = 1
     @State private var isRecurring = true
-    @State private var categoryId: Int?
-    @State private var isSaving = false
-    @State private var error: String?
+    @State private var autoPay = false
+    @State private var category: Category?
 
     var body: some View {
         NavigationStack {
@@ -187,9 +194,9 @@ struct BillEditor: View {
                     TextField("Name, e.g. Netflix", text: $name)
                     TextField("Amount", value: $amount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                         .keyboardType(.decimalPad)
-                    Picker("Category", selection: $categoryId) {
-                        Text("None").tag(Int?.none)
-                        ForEach(model.categories) { Text("\(CategoryStyle.forName($0.name).emoji) \($0.name)").tag(Optional($0.id)) }
+                    Picker("Category", selection: $category) {
+                        Text("None").tag(Category?.none)
+                        ForEach(categories.filter { !$0.isIncome }) { Text("\(CategoryStyle.forName($0.name).emoji) \($0.name)").tag(Optional($0)) }
                     }
                 }
                 Section("Due day") {
@@ -207,43 +214,40 @@ struct BillEditor: View {
                     }
                     .sensoryFeedback(.selection, trigger: dueDay)
                     Toggle("Repeats monthly", isOn: $isRecurring)
+                    Toggle("Autopay", isOn: $autoPay)
                 }
-                if let error { Section { Text(error).foregroundStyle(Theme.expense) } }
             }
             .navigationTitle(bill == nil ? "New bill" : "Edit bill")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save", action: save).bold().disabled(name.isEmpty || (amount ?? 0) <= 0 || isSaving)
+                    Button("Save", action: save).bold().disabled(name.isEmpty || (amount ?? 0) <= 0)
                 }
             }
             .onAppear {
                 guard let bill else { return }
                 name = bill.name
-                amount = bill.amount.doubleValue
+                amount = bill.amount
                 dueDay = bill.dueDay
                 isRecurring = bill.isRecurring
-                categoryId = bill.categoryId
+                autoPay = bill.autoPay
+                category = bill.category
             }
         }
     }
 
     private func save() {
         guard let amount else { return }
-        isSaving = true
-        let request = BillRequest(
-            id: bill?.id, name: name, amount: Decimal(amount), dueDay: dueDay, paid: bill?.isPaid ?? false,
-            recurring: isRecurring, category: categoryId.map { .init(id: $0) }
-        )
-        Task {
-            do {
-                try await model.saveBill(id: bill?.id, request: request)
-                dismiss()
-            } catch {
-                self.error = error.localizedDescription
-            }
-            isSaving = false
-        }
+        let target = bill ?? Bill(name: name, amount: amount, dueDay: dueDay)
+        target.name = name
+        target.amount = amount
+        target.dueDay = dueDay
+        target.isRecurring = isRecurring
+        target.autoPay = autoPay
+        target.category = category
+        if bill == nil { context.insert(target) }
+        try? context.save()
+        dismiss()
     }
 }

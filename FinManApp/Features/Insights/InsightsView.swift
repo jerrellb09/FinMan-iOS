@@ -1,12 +1,13 @@
 import Charts
+import SwiftData
 import SwiftUI
 
 struct InsightsView: View {
-    @Environment(AppModel.self) private var model
+    @Query private var transactions: [Transaction]
     @State private var selectedSlice: String?
     @State private var rawSelection: Double?
 
-    private var analytics: Analytics { Analytics(transactions: model.transactions) }
+    private var analytics: Analytics { Analytics(transactions: transactions) }
 
     var body: some View {
         NavigationStack {
@@ -21,7 +22,6 @@ struct InsightsView: View {
                 .padding(.bottom, 24)
             }
             .background(Color(.systemGroupedBackground))
-            .refreshable { await model.loadTransactions() }
             .navigationTitle("Insights")
         }
     }
@@ -172,47 +172,37 @@ struct InsightsView: View {
     }
 }
 
-/// Pulls narrative advice from the backend's AI endpoints (Claude / Llama via AIService).
+/// On-device money coach (Apple Intelligence when available, rule-based tips otherwise).
 struct AICoachCard: View {
-    @Environment(AppModel.self) private var model
+    @Query private var transactions: [Transaction]
+    @Query private var budgets: [Budget]
+    @Query private var bills: [Bill]
+    @AppStorage(ProfileKey.name) private var name = ""
+    @AppStorage(ProfileKey.monthlyIncome) private var monthlyIncome = 0.0
 
-    enum Mode: String, CaseIterable, Identifiable {
-        case insights = "Insights", budgets = "Budget ideas", habits = "Habits"
-        var id: Self { self }
-        var path: String {
-            switch self {
-            case .insights: "/api/insights/ai/financial-insights"
-            case .budgets: "/api/insights/ai/budget-suggestions"
-            case .habits: "/api/insights/ai/spending-habits"
-            }
-        }
-        var icon: String {
-            switch self {
-            case .insights: "lightbulb.fill"
-            case .budgets: "target"
-            case .habits: "brain.head.profile"
-            }
-        }
-    }
-
-    @State private var mode: Mode = .insights
-    @State private var results: [Mode: String] = [:]
+    @State private var mode: Coach.Mode = .insights
+    @State private var results: [Coach.Mode: String] = [:]
     @State private var loading = false
     @State private var error: String?
     @State private var expanded = false
+    @State private var finished = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Label("AI money coach", systemImage: "sparkles")
+                Label("Money coach", systemImage: "sparkles")
                     .font(.headline)
                     .symbolEffect(.pulse, isActive: loading)
                 Spacer()
+                Text(Coach.isOnDeviceModelAvailable ? "Apple Intelligence" : "Smart tips")
+                    .font(.caption2.weight(.bold))
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(.white.opacity(0.2), in: .capsule)
             }
             .foregroundStyle(.white)
 
             HStack(spacing: 8) {
-                ForEach(Mode.allCases) { m in
+                ForEach(Coach.Mode.allCases) { m in
                     Button {
                         withAnimation(.snappy) { mode = m; expanded = false }
                     } label: {
@@ -227,32 +217,35 @@ struct AICoachCard: View {
             }
 
             Group {
-                if loading {
+                if let text = results[mode], !text.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(LocalizedStringKey(text))
+                            .font(.subheadline)
+                            .lineLimit(expanded || loading ? nil : 8)
+                            .textSelection(.enabled)
+                        if !loading {
+                            Button(expanded ? "Show less" : "Read more") { withAnimation(.snappy) { expanded.toggle() } }
+                                .font(.caption.bold())
+                        }
+                    }
+                } else if loading {
                     HStack(spacing: 10) {
                         ProgressView().tint(.white)
                         Text("Crunching your numbers…").font(.subheadline)
                     }
                     .padding(.vertical, 8)
-                } else if let text = results[mode] {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(text)
-                            .font(.subheadline)
-                            .lineLimit(expanded ? nil : 6)
-                            .textSelection(.enabled)
-                        Button(expanded ? "Show less" : "Read more") { withAnimation(.snappy) { expanded.toggle() } }
-                            .font(.caption.bold())
-                    }
                 } else if let error {
                     Text(error).font(.footnote)
                 } else {
-                    Text("Get personalised tips based on your spending, bills and budgets.").font(.subheadline).opacity(0.9)
+                    Text("Personal tips based on your spending, bills and budgets. Private, on this iPhone.")
+                        .font(.subheadline).opacity(0.9)
                 }
             }
             .foregroundStyle(.white)
             .transition(.opacity)
 
             Button {
-                Task { await fetch() }
+                Task { await ask() }
             } label: {
                 Label(results[mode] == nil ? "Ask the coach" : "Ask again", systemImage: "wand.and.stars")
                     .font(.subheadline.bold())
@@ -267,21 +260,25 @@ struct AICoachCard: View {
         .padding(18)
         .background(Theme.brandGradient, in: .rect(cornerRadius: 26, style: .continuous))
         .shadow(color: Theme.brand.opacity(0.3), radius: 16, y: 8)
-        .sensoryFeedback(.success, trigger: results.count)
+        .sensoryFeedback(.success, trigger: finished)
     }
 
-    private func fetch() async {
+    private func ask() async {
         let current = mode
         loading = true
         error = nil
+        results[current] = nil
         defer { loading = false }
+        let snapshot = Coach.Snapshot(name: name, monthlyIncome: monthlyIncome,
+                                      analytics: Analytics(transactions: transactions), budgets: budgets, bills: bills)
         do {
-            let response: AIText = try await model.api.get(current.path)
-            withAnimation(.snappy) {
-                results[current] = response.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "The coach didn't have anything to say this time."
+            try await Coach.advise(current, snapshot: snapshot) { text in
+                results[current] = text
             }
+            finished += 1
         } catch {
-            self.error = "The AI coach is unavailable right now. \(error.localizedDescription)"
+            // e.g. guardrails or the model being busy; fall back to the built-in tips.
+            results[current] = Coach.ruleBasedTips(current, snapshot: snapshot)
         }
     }
 }

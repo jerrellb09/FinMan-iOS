@@ -1,9 +1,13 @@
+import SwiftData
 import SwiftUI
 
 /// Calculator-style editor for adding or editing a manual transaction.
 struct TransactionEditor: View {
-    @Environment(AppModel.self) private var model
+    @Environment(\.modelContext) private var context
+    @Environment(AppState.self) private var state
     @Environment(\.dismiss) private var dismiss
+    @Query(sort: \Category.sortOrder) private var categories: [Category]
+    @Query(sort: \Account.createdAt) private var accounts: [Account]
 
     let transaction: Transaction?
 
@@ -11,27 +15,27 @@ struct TransactionEditor: View {
     @State private var amountText: String
     @State private var description: String
     @State private var date: Date
-    @State private var categoryId: Int?
-    @State private var accountId: Int?
-    @State private var isSaving = false
-    @State private var error: String?
+    @State private var note: String
+    @State private var category: Category?
+    @State private var account: Account?
     @State private var keyTap = 0
     @State private var saved = 0
 
     init(transaction: Transaction?, startAsIncome: Bool = false) {
         self.transaction = transaction
-        let amount = transaction.map { abs($0.amount.doubleValue) }
+        let amount = transaction.map { abs($0.amount) }
         _isIncome = State(initialValue: transaction.map { $0.amount > 0 } ?? startAsIncome)
         _amountText = State(initialValue: amount.map { String(format: "%g", $0) } ?? "")
-        _description = State(initialValue: transaction?.description ?? "")
+        _description = State(initialValue: transaction?.title ?? "")
         _date = State(initialValue: transaction?.date ?? .now)
-        _categoryId = State(initialValue: transaction?.category?.id)
-        _accountId = State(initialValue: transaction?.accountId)
+        _note = State(initialValue: transaction?.note ?? "")
+        _category = State(initialValue: transaction?.category)
+        _account = State(initialValue: transaction?.account)
     }
 
-    private var amount: Decimal { Decimal(string: amountText) ?? 0 }
-    private var canSave: Bool { amount > 0 && !description.trimmingCharacters(in: .whitespaces).isEmpty && (transaction != nil || resolvedAccountId != nil) }
-    private var resolvedAccountId: Int? { accountId ?? model.accounts.first?.id }
+    private var amount: Double { Double(amountText) ?? 0 }
+    private var canSave: Bool { amount > 0 && !description.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var resolvedAccount: Account? { account ?? accounts.first }
     private var accent: Color { isIncome ? Theme.income : Theme.expense }
 
     var body: some View {
@@ -59,16 +63,22 @@ struct TransactionEditor: View {
                             DatePicker("Date", selection: $date, in: ...Date.now.addingTimeInterval(86_400 * 365))
                         }
                         .padding(.vertical, 8)
-                        if transaction == nil && model.accounts.count > 1 {
+                        if accounts.count > 1 {
                             Divider()
                             HStack {
                                 Image(systemName: "building.columns").foregroundStyle(.secondary).frame(width: 24)
-                                Picker("Account", selection: Binding(get: { resolvedAccountId }, set: { accountId = $0 })) {
-                                    ForEach(model.accounts) { Text($0.name).tag(Optional($0.id)) }
+                                Picker("Account", selection: Binding(get: { resolvedAccount }, set: { account = $0 })) {
+                                    ForEach(accounts) { Text($0.name).tag(Optional($0)) }
                                 }
                             }
                             .padding(.vertical, 6)
                         }
+                        Divider()
+                        HStack {
+                            Image(systemName: "note.text").foregroundStyle(.secondary).frame(width: 24)
+                            TextField("Note (optional)", text: $note)
+                        }
+                        .padding(.vertical, 14)
                     }
                     .padding(.horizontal, 16)
                     .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 18, style: .continuous))
@@ -76,14 +86,6 @@ struct TransactionEditor: View {
                     categoryStrip
 
                     keypad
-
-                    if transaction == nil && model.accounts.isEmpty {
-                        Label("You need a linked account before adding transactions.", systemImage: "info.circle")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    if let error {
-                        Label(error, systemImage: "exclamationmark.circle.fill").font(.footnote).foregroundStyle(Theme.expense)
-                    }
                 }
                 .padding()
             }
@@ -93,11 +95,14 @@ struct TransactionEditor: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(action: save) {
-                        if isSaving { ProgressView() } else { Text("Save").bold() }
-                    }
-                    .disabled(!canSave || isSaving)
+                    Button("Save", action: save).bold().disabled(!canSave)
                 }
+            }
+            .onChange(of: isIncome, initial: true) { _, income in
+                // Default new income to the Income category; drop it if switching back to an expense.
+                guard transaction == nil else { return }
+                if income, category == nil { category = categories.first(where: \.isIncome) }
+                if !income, category?.isIncome == true { category = nil }
             }
             .sensoryFeedback(.impact(weight: .light), trigger: keyTap)
             .sensoryFeedback(.success, trigger: saved)
@@ -124,10 +129,10 @@ struct TransactionEditor: View {
     private var categoryStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
-                ForEach(model.categories) { category in
-                    let selected = categoryId == category.id
+                ForEach(categories.filter { isIncome || !$0.isIncome }) { category in
+                    let selected = self.category?.id == category.id
                     Button {
-                        withAnimation(.snappy) { categoryId = selected ? nil : category.id }
+                        withAnimation(.snappy) { self.category = selected ? nil : category }
                         keyTap += 1
                     } label: {
                         VStack(spacing: 6) {
@@ -178,25 +183,23 @@ struct TransactionEditor: View {
     }
 
     private func save() {
-        isSaving = true
-        error = nil
-        let request = TransactionRequest(
-            accountId: transaction == nil ? resolvedAccountId : nil,
-            description: description.trimmingCharacters(in: .whitespaces),
-            amount: isIncome ? amount : -amount,
-            date: DateParsing.localDateTimeString(date),
-            categoryId: categoryId
-        )
-        Task {
-            do {
-                try await model.saveTransaction(id: transaction?.id, request: request)
-                saved += 1
-                if isIncome { model.celebrationTrigger += 1 }
-                dismiss()
-            } catch {
-                self.error = error.localizedDescription
-            }
-            isSaving = false
+        let title = description.trimmingCharacters(in: .whitespaces)
+        let signed = isIncome ? amount : -amount
+        if let transaction {
+            transaction.title = title
+            transaction.amount = signed
+            transaction.date = date
+            transaction.note = note
+            transaction.category = category
+            transaction.account = resolvedAccount
+        } else {
+            let tx = Transaction(title: title, amount: signed, date: date, category: category, account: resolvedAccount)
+            tx.note = note
+            context.insert(tx)
         }
+        try? context.save()
+        saved += 1
+        if isIncome && transaction == nil { state.celebrate() }
+        dismiss()
     }
 }

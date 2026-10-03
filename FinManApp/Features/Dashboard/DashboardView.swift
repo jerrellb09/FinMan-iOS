@@ -1,15 +1,23 @@
 import Charts
+import SwiftData
 import SwiftUI
 
 struct DashboardView: View {
-    @Environment(AppModel.self) private var model
     @Binding var selectedTab: AppTab
+
+    @Query(sort: \Transaction.date, order: .reverse) private var transactions: [Transaction]
+    @Query(sort: \Account.createdAt) private var accounts: [Account]
+    @Query(sort: \Budget.createdAt) private var budgets: [Budget]
+    @Query private var bills: [Bill]
+    @AppStorage(ProfileKey.name) private var name = ""
+    @AppStorage(ProfileKey.monthlyIncome) private var monthlyIncome = 0.0
 
     @State private var showSettings = false
     @State private var quickAdd: QuickAddKind?
 
-    private var analytics: Analytics { Analytics(transactions: model.transactions) }
-    private var totalBalance: Double { model.accounts.reduce(0) { $0 + $1.balance.doubleValue } }
+    private var analytics: Analytics { Analytics(transactions: transactions) }
+    private var totalBalance: Double { accounts.reduce(0) { $0 + $1.balance } }
+    private var sortedBills: [Bill] { bills.sorted { $0.daysUntilDue() < $1.daysUntilDue() } }
 
     var body: some View {
         NavigationStack {
@@ -27,12 +35,11 @@ struct DashboardView: View {
                 .padding(.bottom, 24)
             }
             .background(Color(.systemGroupedBackground))
-            .refreshable { await model.refreshAll() }
             .navigationTitle(greeting)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showSettings = true } label: {
-                        Text(model.user?.initials ?? "?")
+                        Text(name.initials)
                             .font(.subheadline.bold())
                             .foregroundStyle(.white)
                             .frame(width: 34, height: 34)
@@ -51,7 +58,7 @@ struct DashboardView: View {
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: .now)
         let part = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"
-        return "\(part), \(model.user?.displayName ?? "friend")"
+        return name.isEmpty ? part : "\(part), \(name)"
     }
 
     // MARK: Hero
@@ -69,10 +76,6 @@ struct DashboardView: View {
                         .lineLimit(1)
                 }
                 Spacer()
-                if model.user?.isDemo == true {
-                    Text("DEMO").font(.caption2.weight(.heavy)).padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(.white.opacity(0.2), in: .capsule)
-                }
             }
 
             HStack(spacing: 12) {
@@ -145,10 +148,7 @@ struct DashboardView: View {
     // MARK: Health
 
     private var healthCard: some View {
-        let score = Analytics.healthScore(
-            analytics: analytics, budgets: model.budgets, spending: model.budgetSpending,
-            bills: model.bills, monthlyIncome: model.user?.monthlyIncome?.doubleValue ?? 0
-        )
+        let score = analytics.healthScore(budgets: budgets, bills: bills, monthlyIncome: monthlyIncome)
         let mood = score >= 80 ? ("🤩", "Crushing it") : score >= 60 ? ("😊", "Looking good") : score >= 40 ? ("😐", "Room to grow") : ("😬", "Let's regroup")
         let streak = analytics.noSpendStreak
 
@@ -218,7 +218,7 @@ struct DashboardView: View {
 
     @ViewBuilder
     private var upcomingBills: some View {
-        let upcoming = model.bills.filter { !$0.isPaid }.prefix(6)
+        let upcoming = sortedBills.filter { !$0.isPaid }.prefix(6)
         if !upcoming.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(title: "Up next", action: ("See all", { selectedTab = .bills }))
@@ -240,22 +240,20 @@ struct DashboardView: View {
 
     @ViewBuilder
     private var budgetsSnapshot: some View {
-        if !model.budgets.isEmpty {
+        if !budgets.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(title: "Budgets", action: ("See all", { selectedTab = .budgets }))
                 VStack(spacing: 14) {
-                    ForEach(model.budgets.prefix(3)) { budget in
-                        let spending = model.budgetSpending[budget.id]
-                        let progress = (spending?.percentageUsed.doubleValue ?? 0) / 100
+                    ForEach(budgets.prefix(3)) { budget in
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 Text(CategoryStyle.forName(budget.category?.name).emoji)
                                 Text(budget.name).font(.subheadline.weight(.semibold))
                                 Spacer()
-                                Text("\((spending?.currentSpending ?? 0).currency(compact: true)) / \(budget.amount.currency(compact: true))")
+                                Text("\(budget.spent().currency(compact: true)) / \(budget.amount.currency(compact: true))")
                                     .font(.caption.weight(.medium)).foregroundStyle(.secondary).monospacedDigit()
                             }
-                            ProgressCapsule(progress: progress, warning: budget.warningThreshold.doubleValue / 100)
+                            ProgressCapsule(progress: budget.progress(), warning: budget.warningThreshold / 100)
                         }
                     }
                 }
@@ -269,16 +267,16 @@ struct DashboardView: View {
     private var recentActivity: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "Recent activity", action: ("See all", { selectedTab = .activity }))
-            if model.transactions.isEmpty {
+            if transactions.isEmpty {
                 EmptyStateView(emoji: "🧾", title: "No transactions yet", message: "Add your first expense or income to get the party started.",
                                actionTitle: "Add transaction") { quickAdd = .expense }
                     .card()
             } else {
                 VStack(spacing: 0) {
-                    ForEach(model.transactions.prefix(5)) { tx in
+                    ForEach(transactions.prefix(5)) { tx in
                         TransactionRow(transaction: tx)
                             .padding(.vertical, 10)
-                        if tx.id != model.transactions.prefix(5).last?.id { Divider().padding(.leading, 52) }
+                        if tx.id != transactions.prefix(5).last?.id { Divider().padding(.leading, 52) }
                     }
                 }
                 .card(padding: 14)
@@ -300,7 +298,7 @@ struct BillChip: View {
             : ("In \(days) days", .secondary)
 
         VStack(alignment: .leading, spacing: 10) {
-            CategoryIcon(name: bill.categoryName ?? bill.name, size: 36)
+            CategoryIcon(name: bill.category?.name ?? bill.name, size: 36)
             Text(bill.name).font(.subheadline.weight(.semibold)).lineLimit(1)
             Text(bill.amount.currency()).font(.headline).monospacedDigit()
             Text(label).font(.caption.weight(.bold)).foregroundStyle(color)

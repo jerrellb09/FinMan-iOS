@@ -1,7 +1,9 @@
+import SwiftData
 import SwiftUI
 
 struct TransactionsView: View {
-    @Environment(AppModel.self) private var model
+    @Environment(\.modelContext) private var context
+    @Query(sort: \Transaction.date, order: .reverse) private var transactions: [Transaction]
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All", spending = "Spending", income = "Income"
@@ -17,11 +19,12 @@ struct TransactionsView: View {
     @State private var deleteTrigger = 0
 
     private var filtered: [Transaction] {
-        model.transactions.filter { tx in
+        transactions.filter { tx in
             (filter == .all || (filter == .income ? tx.amount > 0 : tx.amount < 0))
             && (categoryFilter == nil || (tx.category?.name ?? "Uncategorized") == categoryFilter)
-            && (search.isEmpty || tx.description.localizedCaseInsensitiveContains(search)
-                || (tx.category?.name.localizedCaseInsensitiveContains(search) ?? false))
+            && (search.isEmpty || tx.title.localizedCaseInsensitiveContains(search)
+                || (tx.category?.name.localizedCaseInsensitiveContains(search) ?? false)
+                || tx.note.localizedCaseInsensitiveContains(search))
         }
     }
 
@@ -33,7 +36,7 @@ struct TransactionsView: View {
     }
 
     private var categoryNames: [String] {
-        Array(Set(model.transactions.map { $0.category?.name ?? "Uncategorized" })).sorted()
+        Array(Set(transactions.map { $0.category?.name ?? "Uncategorized" })).sorted()
     }
 
     var body: some View {
@@ -49,40 +52,38 @@ struct TransactionsView: View {
                     EmptyStateView(
                         emoji: search.isEmpty ? "🧾" : "🔍",
                         title: search.isEmpty ? "Nothing here yet" : "No matches",
-                        message: search.isEmpty ? "Transactions from the last 6 months show up here." : "Try a different search or filter."
-                    )
+                        message: search.isEmpty ? "Tap + to log your first expense or income." : "Try a different search or filter.",
+                        actionTitle: search.isEmpty ? "Add transaction" : nil
+                    ) { showNew = true }
                     .listRowBackground(Color.clear)
                 }
 
                 ForEach(grouped, id: \.day) { group in
                     Section {
                         ForEach(group.items) { tx in
-                            Button { if tx.isManualEntry { editing = tx } else { categorizing = tx } } label: {
+                            Button { editing = tx } label: {
                                 TransactionRow(transaction: tx)
                             }
                             .buttonStyle(.plain)
                             .swipeActions(edge: .trailing) {
-                                if tx.isManualEntry {
-                                    Button(role: .destructive) { delete(tx) } label: { Label("Delete", systemImage: "trash") }
-                                }
+                                Button(role: .destructive) { delete(tx) } label: { Label("Delete", systemImage: "trash") }
                             }
                             .swipeActions(edge: .leading) {
                                 Button { categorizing = tx } label: { Label("Categorize", systemImage: "tag") }
                                     .tint(.purple)
                             }
                             .contextMenu {
+                                Button { editing = tx } label: { Label("Edit", systemImage: "pencil") }
                                 Button { categorizing = tx } label: { Label("Change category", systemImage: "tag") }
-                                if tx.isManualEntry {
-                                    Button { editing = tx } label: { Label("Edit", systemImage: "pencil") }
-                                    Button(role: .destructive) { delete(tx) } label: { Label("Delete", systemImage: "trash") }
-                                }
+                                Button { duplicate(tx) } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
+                                Button(role: .destructive) { delete(tx) } label: { Label("Delete", systemImage: "trash") }
                             }
                         }
                     } header: {
                         HStack {
                             Text(dayTitle(group.day))
                             Spacer()
-                            let net = group.items.reduce(0) { $0 + $1.amount.doubleValue }
+                            let net = group.items.reduce(0) { $0 + $1.amount }
                             Text(net.currency(showSign: true)).monospacedDigit()
                         }
                     }
@@ -90,7 +91,6 @@ struct TransactionsView: View {
             }
             .listStyle(.insetGrouped)
             .searchable(text: $search, prompt: "Search transactions")
-            .refreshable { await model.loadTransactions() }
             .navigationTitle("Activity")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -143,14 +143,16 @@ struct TransactionsView: View {
     }
 
     private func delete(_ tx: Transaction) {
-        Task {
-            do {
-                try await model.deleteTransaction(tx)
-                deleteTrigger += 1
-            } catch {
-                model.lastError = error.localizedDescription
-            }
-        }
+        withAnimation { context.delete(tx) }
+        try? context.save()
+        deleteTrigger += 1
+    }
+
+    private func duplicate(_ tx: Transaction) {
+        let copy = Transaction(title: tx.title, amount: tx.amount, date: .now, category: tx.category, account: tx.account)
+        copy.note = tx.note
+        withAnimation { context.insert(copy) }
+        try? context.save()
     }
 }
 
@@ -161,25 +163,27 @@ struct TransactionRow: View {
         HStack(spacing: 12) {
             CategoryIcon(name: transaction.category?.name ?? (transaction.isIncome ? "Income" : nil))
             VStack(alignment: .leading, spacing: 2) {
-                Text(transaction.description).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text(transaction.title).font(.subheadline.weight(.semibold)).lineLimit(1)
                 HStack(spacing: 4) {
                     Text(transaction.category?.name ?? "Uncategorized")
-                    if transaction.isManualEntry {
-                        Image(systemName: "pencil.circle.fill").imageScale(.small)
+                    if let account = transaction.account?.name {
+                        Text("·")
+                        Text(account)
                     }
                 }
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
-            AmountText(amount: transaction.amount.doubleValue, font: .subheadline.weight(.semibold))
+            AmountText(amount: transaction.amount, font: .subheadline.weight(.semibold))
         }
         .contentShape(.rect)
     }
 }
 
 struct CategoryPickerSheet: View {
-    @Environment(AppModel.self) private var model
+    @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
+    @Query(sort: \Category.sortOrder) private var categories: [Category]
     let transaction: Transaction
 
     @State private var picked = 0
@@ -191,23 +195,20 @@ struct CategoryPickerSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack {
-                        Text(transaction.description).font(.headline)
+                        Text(transaction.title).font(.headline)
                         Spacer()
-                        AmountText(amount: transaction.amount.doubleValue)
+                        AmountText(amount: transaction.amount)
                     }
                     .card()
 
                     LazyVGrid(columns: columns, spacing: 12) {
-                        ForEach(model.categories) { category in
+                        ForEach(categories) { category in
                             let selected = transaction.category?.id == category.id
                             Button {
-                                Task {
-                                    do {
-                                        try await model.categorize(transaction, as: category)
-                                        picked += 1
-                                        dismiss()
-                                    } catch { model.lastError = error.localizedDescription }
-                                }
+                                transaction.category = category
+                                try? context.save()
+                                picked += 1
+                                dismiss()
                             } label: {
                                 VStack(spacing: 8) {
                                     CategoryIcon(name: category.name, size: 44)

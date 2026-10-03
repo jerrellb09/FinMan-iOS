@@ -1,58 +1,65 @@
+import SwiftData
 import SwiftUI
 
 @main
 struct FinManApp: App {
-    @State private var model = AppModel()
+    @State private var state = AppState()
+    let container: ModelContainer
+
+    init() {
+        do {
+            container = try ModelContainer(for: Schema(AppSchema.models))
+        } catch {
+            fatalError("Couldn't open the FinMan data store: \(error)")
+        }
+        DataStore.seedCategoriesIfNeeded(container.mainContext)
+        #if DEBUG
+        // `-sampleData` launch argument resets to fresh sample data (handy for UI work and screenshots).
+        if ProcessInfo.processInfo.arguments.contains("-sampleData") {
+            DataStore.eraseAll(container.mainContext)
+            DataStore.loadSampleData(container.mainContext, monthlyIncome: 5_000, paydayDay: 15)
+            let defaults = UserDefaults.standard
+            defaults.set("Alex", forKey: ProfileKey.name)
+            defaults.set(5_000.0, forKey: ProfileKey.monthlyIncome)
+            defaults.set(15, forKey: ProfileKey.paydayDay)
+            defaults.set(true, forKey: ProfileKey.hasOnboarded)
+        }
+        #endif
+    }
 
     var body: some Scene {
         WindowGroup {
             RootView()
-                .environment(model)
-                .task {
-                    #if DEBUG
-                    // `-autoDemo` launch argument signs straight into the demo account (handy for UI work).
-                    if ProcessInfo.processInfo.arguments.contains("-autoDemo") {
-                        try? await model.demoLogin()
-                        return
-                    }
-                    #endif
-                    await model.restoreSession()
-                }
+                .environment(state)
         }
+        .modelContainer(container)
     }
 }
 
 struct RootView: View {
-    @Environment(AppModel.self) private var model
+    @Environment(AppState.self) private var state
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(ProfileKey.hasOnboarded) private var hasOnboarded = false
+    @AppStorage(ProfileKey.faceIDEnabled) private var faceIDEnabled = false
+    @State private var isLocked = UserDefaults.standard.bool(forKey: ProfileKey.faceIDEnabled)
 
     var body: some View {
         ZStack {
-            switch model.phase {
-            case .launching:
-                LaunchView()
-            case .signedOut:
-                AuthView().transition(.opacity)
-            case .signedIn:
+            if hasOnboarded {
                 MainTabView().transition(.opacity.combined(with: .scale(scale: 0.98)))
+            } else {
+                OnboardingView().transition(.opacity)
             }
-            ConfettiView(trigger: model.celebrationTrigger)
+            ConfettiView(trigger: state.celebrationTrigger)
+            if isLocked && faceIDEnabled {
+                LockScreen { withAnimation(.snappy) { isLocked = false } }
+                    .transition(.opacity)
+                    .zIndex(1)
+            }
         }
-        .animation(.snappy, value: model.phase)
-    }
-}
-
-private struct LaunchView: View {
-    @State private var pulse = false
-
-    var body: some View {
-        ZStack {
-            Theme.brandGradient.ignoresSafeArea()
-            Image(systemName: "chart.pie.fill")
-                .font(.system(size: 72, weight: .bold))
-                .foregroundStyle(.white)
-                .scaleEffect(pulse ? 1.08 : 0.94)
-                .animation(.easeInOut(duration: 0.8).repeatForever(), value: pulse)
-                .onAppear { pulse = true }
+        .animation(.snappy, value: hasOnboarded)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background && faceIDEnabled { isLocked = true }
         }
     }
 }
@@ -60,8 +67,26 @@ private struct LaunchView: View {
 enum AppTab: Hashable { case home, activity, budgets, bills, insights }
 
 struct MainTabView: View {
-    @Environment(AppModel.self) private var model
-    @State private var tab: AppTab = .home
+    @Environment(AppState.self) private var state
+    @Query private var bills: [Bill]
+    @State private var tab: AppTab = Self.launchTab
+
+    /// Debug builds accept `-tab activity|budgets|bills|insights` to open on a specific tab.
+    private static var launchTab: AppTab {
+        #if DEBUG
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-tab"), i + 1 < args.count {
+            switch args[i + 1] {
+            case "activity": return .activity
+            case "budgets": return .budgets
+            case "bills": return .bills
+            case "insights": return .insights
+            default: break
+            }
+        }
+        #endif
+        return .home
+    }
 
     var body: some View {
         TabView(selection: $tab) {
@@ -77,21 +102,21 @@ struct MainTabView: View {
             Tab("Bills", systemImage: "calendar.badge.clock", value: .bills) {
                 BillsView()
             }
-            .badge(model.bills.filter { !$0.isPaid && $0.daysUntilDue() <= 3 }.count)
+            .badge(bills.filter { !$0.isPaid && $0.daysUntilDue() <= 3 }.count)
             Tab("Insights", systemImage: "sparkles", value: .insights) {
                 InsightsView()
             }
         }
         .sensoryFeedback(.selection, trigger: tab)
         .overlay(alignment: .top) {
-            if let error = model.lastError {
-                ErrorBanner(message: error) { withAnimation { model.lastError = nil } }
+            if let error = state.lastError {
+                ErrorBanner(message: error) { withAnimation { state.lastError = nil } }
                     .task {
                         try? await Task.sleep(for: .seconds(5))
-                        withAnimation { model.lastError = nil }
+                        withAnimation { state.lastError = nil }
                     }
             }
         }
-        .animation(.snappy, value: model.lastError)
+        .animation(.snappy, value: state.lastError)
     }
 }

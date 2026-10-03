@@ -8,7 +8,6 @@
 
 /* Begin PBXFileReference section */
 		A10000000000000000000001 /* FinManApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FinManApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		A10000000000000000000002 /* FinManApp-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "FinManApp-Info.plist"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -34,7 +33,6 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000010 /* FinManApp */,
-				A10000000000000000000002 /* FinManApp-Info.plist */,
 				A10000000000000000000031 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -183,7 +181,6 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "FinManApp-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = FinMan;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Unlock FinMan quickly and securely with Face ID.";
@@ -217,7 +214,6 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "FinManApp-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = FinMan;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Unlock FinMan quickly and securely with Face ID.";

@@ -1,188 +1,165 @@
 import Foundation
+import SwiftData
 
-// MARK: - Auth
+// All properties have defaults and relationships are optional so the schema stays
+// compatible with CloudKit sync if it's switched on later.
 
-struct User: Decodable, Hashable {
-    var id: Int
-    var email: String
-    var firstName: String
-    var lastName: String
-    var monthlyIncome: Decimal?
-    var paydayDay: Int?
-    var isDemo: Bool
+@Model
+final class Account {
+    var name: String = ""
+    /// "checking", "savings", "credit" or "cash".
+    var kind: String = "checking"
+    var startingBalance: Double = 0
+    var createdAt: Date = Date.now
 
-    var displayName: String { firstName.isEmpty ? email : firstName }
-    var initials: String {
-        let letters = [firstName.first, lastName.first].compactMap { $0 }
-        return letters.isEmpty ? String(email.prefix(1)).uppercased() : String(letters).uppercased()
+    @Relationship(deleteRule: .nullify, inverse: \Transaction.account)
+    var transactions: [Transaction]? = []
+
+    init(name: String, kind: String = "checking", startingBalance: Double = 0) {
+        self.name = name
+        self.kind = kind
+        self.startingBalance = startingBalance
     }
 
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
-        email = c.string("email") ?? ""
-        firstName = c.string("firstName") ?? ""
-        lastName = c.string("lastName") ?? ""
-        monthlyIncome = c.decimal("monthlyIncome")
-        paydayDay = c.int("paydayDay")
-        isDemo = c.bool("isDemo", "demo") ?? false
-    }
-}
+    var balance: Double { startingBalance + (transactions ?? []).reduce(0) { $0 + $1.amount } }
 
-struct AuthResponse: Decodable {
-    let token: String
-    let user: User
-}
-
-struct LoginRequest: Encodable { let email: String; let password: String }
-struct RegisterRequest: Encodable { let email: String; let password: String; let firstName: String; let lastName: String }
-
-// MARK: - Category
-
-struct Category: Decodable, Hashable, Identifiable {
-    var id: Int
-    var name: String
-    var description: String?
-    var iconUrl: String?
-
-    init(id: Int, name: String) { self.id = id; self.name = name }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
-        name = c.string("name") ?? "Uncategorized"
-        description = c.string("description")
-        iconUrl = c.string("iconUrl")
+    var symbol: String {
+        switch kind {
+        case "savings": "banknote.fill"
+        case "credit": "creditcard.fill"
+        case "cash": "dollarsign.circle.fill"
+        default: "building.columns.fill"
+        }
     }
 }
 
-// MARK: - Account
+@Model
+final class Category {
+    var name: String = ""
+    var isIncome: Bool = false
+    var sortOrder: Int = 0
 
-struct Account: Decodable, Hashable, Identifiable {
-    var id: Int
-    var name: String
-    var type: String?
-    var balance: Decimal
-    var institutionName: String?
+    @Relationship(deleteRule: .nullify, inverse: \Transaction.category)
+    var transactions: [Transaction]? = []
+    @Relationship(deleteRule: .nullify, inverse: \Budget.category)
+    var budgets: [Budget]? = []
+    @Relationship(deleteRule: .nullify, inverse: \Bill.category)
+    var bills: [Bill]? = []
 
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
-        name = c.string("name") ?? "Account"
-        type = c.string("type")
-        balance = c.decimal("balance") ?? 0
-        institutionName = c.string("institutionName")
+    init(name: String, isIncome: Bool = false, sortOrder: Int = 0) {
+        self.name = name
+        self.isIncome = isIncome
+        self.sortOrder = sortOrder
     }
+
+    /// Same defaults the Spring Boot backend seeds, plus Income.
+    static let defaults: [(String, Bool)] = [
+        ("Housing", false), ("Transportation", false), ("Food", false), ("Entertainment", false),
+        ("Healthcare", false), ("Personal", false), ("Education", false), ("Savings", false),
+        ("Debt", false), ("Travel", false), ("Shopping", false), ("Utilities", false),
+        ("Subscriptions", false), ("Income", true),
+    ]
 }
 
-// MARK: - Transaction
-
-struct Transaction: Decodable, Hashable, Identifiable {
-    var id: Int
-    var description: String
-    /// Positive = income, negative = expense (matches the backend convention).
-    var amount: Decimal
-    var date: Date
+@Model
+final class Transaction {
+    var title: String = ""
+    /// Positive = income, negative = expense.
+    var amount: Double = 0
+    var date: Date = Date.now
+    var note: String = ""
     var category: Category?
-    var isManualEntry: Bool
-    var accountId: Int?
+    var account: Account?
+    var createdAt: Date = Date.now
+
+    init(title: String, amount: Double, date: Date = .now, category: Category? = nil, account: Account? = nil) {
+        self.title = title
+        self.amount = amount
+        self.date = date
+        self.category = category
+        self.account = account
+    }
 
     var isIncome: Bool { amount > 0 }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
-        description = c.string("description") ?? "Transaction"
-        amount = c.decimal("amount") ?? 0
-        date = c.date("date") ?? .now
-        category = c.nested(Category.self, "category")
-        isManualEntry = c.bool("manualEntry", "isManualEntry") ?? false
-        accountId = c.nested(IDOnly.self, "account")?.id
-    }
 }
 
-struct IDOnly: Decodable { let id: Int? }
-
-struct TransactionRequest: Encodable {
-    var accountId: Int?
-    var description: String
-    var amount: Decimal
-    var date: String
-    var categoryId: Int?
-}
-
-// MARK: - Budget
-
-struct Budget: Decodable, Hashable, Identifiable {
-    var id: Int
-    var name: String
-    var amount: Decimal
-    var category: Category?
-    var period: String
-    var startDate: Date?
+@Model
+final class Budget {
+    var name: String = ""
+    var amount: Double = 0
+    /// "WEEKLY", "MONTHLY" or "YEARLY".
+    var period: String = "MONTHLY"
+    var startDate: Date = Date.now
     var endDate: Date?
-    var warningThreshold: Decimal
+    /// Percentage (0–100) at which the budget is flagged as "getting close".
+    var warningThreshold: Double = 80
+    var category: Category?
+    var createdAt: Date = Date.now
 
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
-        name = c.string("name") ?? "Budget"
-        amount = c.decimal("amount") ?? 0
-        category = c.nested(Category.self, "category")
-        period = c.string("period") ?? "MONTHLY"
-        startDate = c.date("startDate")
-        endDate = c.date("endDate")
-        warningThreshold = c.decimal("warningThreshold") ?? 80
+    init(name: String, amount: Double, category: Category?, period: String = "MONTHLY",
+         startDate: Date = .now, endDate: Date? = nil, warningThreshold: Double = 80) {
+        self.name = name
+        self.amount = amount
+        self.category = category
+        self.period = period
+        self.startDate = startDate
+        self.endDate = endDate
+        self.warningThreshold = warningThreshold
     }
+
+    /// The window the budget currently measures (this week / month / year), clipped to its dates.
+    func currentInterval(now: Date = .now, calendar: Calendar = .current) -> DateInterval {
+        let component: Calendar.Component = switch period {
+        case "WEEKLY": .weekOfYear
+        case "YEARLY": .year
+        default: .month
+        }
+        var interval = calendar.dateInterval(of: component, for: now) ?? DateInterval(start: now, duration: 0)
+        if startDate > interval.start, startDate < interval.end { interval = DateInterval(start: startDate, end: interval.end) }
+        if let endDate, endDate < interval.end, endDate > interval.start { interval = DateInterval(start: interval.start, end: endDate) }
+        return interval
+    }
+
+    /// Net spending in the budget's category during the current window (refunds offset it).
+    func spent(now: Date = .now) -> Double {
+        guard let category else { return 0 }
+        let interval = currentInterval(now: now)
+        let net = (category.transactions ?? [])
+            .filter { interval.contains($0.date) }
+            .reduce(0) { $0 + $1.amount }
+        return net < 0 ? -net : 0
+    }
+
+    func progress(now: Date = .now) -> Double { amount > 0 ? spent(now: now) / amount : 0 }
 }
 
-struct BudgetSpending: Decodable, Hashable {
-    var currentSpending: Decimal
-    var percentageUsed: Decimal
-    var remaining: Decimal
+@Model
+final class Bill {
+    var name: String = ""
+    var amount: Double = 0
+    var dueDay: Int = 1
+    var isRecurring: Bool = true
+    var autoPay: Bool = false
+    /// When the bill was last marked paid. Recurring bills count as paid only within that month,
+    /// so they reset automatically when a new month starts.
+    var lastPaidDate: Date?
+    var category: Category?
+    var createdAt: Date = Date.now
 
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: AnyKey.self)
-        currentSpending = c.decimal("currentSpending") ?? 0
-        percentageUsed = c.decimal("percentageUsed") ?? 0
-        remaining = c.decimal("remaining") ?? 0
+    init(name: String, amount: Double, dueDay: Int, isRecurring: Bool = true, category: Category? = nil) {
+        self.name = name
+        self.amount = amount
+        self.dueDay = dueDay
+        self.isRecurring = isRecurring
+        self.category = category
     }
-}
 
-struct BudgetRequest: Encodable {
-    var name: String
-    var amount: Decimal
-    var categoryId: Int
-    var period: String
-    var startDate: String
-    var endDate: String?
-    var warningThreshold: Decimal
-}
-
-// MARK: - Bill
-
-struct Bill: Decodable, Hashable, Identifiable {
-    var id: Int
-    var name: String
-    var amount: Decimal
-    var dueDay: Int
-    var isPaid: Bool
-    var isRecurring: Bool
-    var categoryId: Int?
-    var categoryName: String?
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
-        name = c.string("name") ?? "Bill"
-        amount = c.decimal("amount") ?? 0
-        dueDay = c.int("dueDay") ?? 1
-        isPaid = c.bool("paid", "isPaid") ?? false
-        isRecurring = c.bool("recurring", "isRecurring") ?? true
-        let category = c.nested(Category.self, "category")
-        categoryId = c.int("categoryId") ?? category?.id
-        categoryName = c.string("categoryName") ?? category?.name
+    var isPaid: Bool {
+        guard let lastPaidDate else { return false }
+        return isRecurring ? Calendar.current.isDate(lastPaidDate, equalTo: .now, toGranularity: .month) : true
     }
+
+    func setPaid(_ paid: Bool) { lastPaidDate = paid ? .now : nil }
 
     /// Next calendar date this bill falls due (clamped to the month length).
     func nextDueDate(from now: Date = .now, calendar: Calendar = .current) -> Date {
@@ -204,44 +181,7 @@ struct Bill: Decodable, Hashable, Identifiable {
     }
 }
 
-/// Body shape the backend's `Bill` entity deserialises from (Lombok `isPaid` -> `paid`).
-/// `id` is required on updates because `Bill` uses `@JsonIdentityInfo`.
-struct BillRequest: Encodable {
-    struct CategoryRef: Encodable { let id: Int }
-    var id: Int?
-    var name: String
-    var amount: Decimal
-    var dueDay: Int
-    var paid: Bool
-    var recurring: Bool
-    var recurringPeriod = "MONTHLY"
-    var category: CategoryRef?
+/// Everything the app persists, in one place for the model container.
+enum AppSchema {
+    static let models: [any PersistentModel.Type] = [Account.self, Category.self, Transaction.self, Budget.self, Bill.self]
 }
-
-// MARK: - Insights
-
-struct BillsVsIncome: Decodable {
-    var monthlyIncome: Decimal
-    var totalBills: Decimal
-    var remainingIncome: Decimal
-    var billPercentage: Decimal
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: AnyKey.self)
-        monthlyIncome = c.decimal("monthlyIncome") ?? 0
-        totalBills = c.decimal("totalBills") ?? 0
-        remainingIncome = c.decimal("remainingIncome") ?? 0
-        billPercentage = c.decimal("billPercentage") ?? 0
-    }
-}
-
-struct AIText: Decodable {
-    var text: String?
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: AnyKey.self)
-        text = c.string("insights", "suggestions", "analysis", "message", "error")
-    }
-}
-
-struct IncomeRequest: Encodable { var monthlyIncome: Decimal; var paydayDay: Int }

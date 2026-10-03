@@ -14,10 +14,6 @@ enum Theme {
 
 // MARK: - Currency
 
-extension Decimal {
-    func currency(showSign: Bool = false, compact: Bool = false) -> String { doubleValue.currency(showSign: showSign, compact: compact) }
-}
-
 extension Double {
     func currency(showSign: Bool = false, compact: Bool = false) -> String {
         let code = Locale.current.currency?.identifier ?? "USD"
@@ -38,10 +34,10 @@ struct CategoryStyle {
     static func forName(_ name: String?) -> CategoryStyle {
         switch (name ?? "").lowercased() {
         case let n where n.contains("hous") || n.contains("rent"): .init(symbol: "house.fill", color: .indigo, emoji: "🏠")
+        case let n where n.contains("health") || n.contains("medical") || n.contains("gym"): .init(symbol: "heart.fill", color: .red, emoji: "🩺")
         case let n where n.contains("transport") || n.contains("car") || n.contains("gas"): .init(symbol: "car.fill", color: .blue, emoji: "🚗")
         case let n where n.contains("food") || n.contains("grocer") || n.contains("dining") || n.contains("restaurant"): .init(symbol: "fork.knife", color: .orange, emoji: "🍔")
         case let n where n.contains("entertain"): .init(symbol: "popcorn.fill", color: .pink, emoji: "🍿")
-        case let n where n.contains("health") || n.contains("medical"): .init(symbol: "heart.fill", color: .red, emoji: "🩺")
         case let n where n.contains("personal"): .init(symbol: "sparkles", color: .purple, emoji: "💅")
         case let n where n.contains("educat"): .init(symbol: "book.fill", color: .brown, emoji: "📚")
         case let n where n.contains("saving") || n.contains("invest"): .init(symbol: "banknote.fill", color: .green, emoji: "🐷")

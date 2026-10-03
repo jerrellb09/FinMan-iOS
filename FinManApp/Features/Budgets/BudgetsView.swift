@@ -1,19 +1,23 @@
+import SwiftData
 import SwiftUI
 
 struct BudgetsView: View {
-    @Environment(AppModel.self) private var model
+    @Environment(\.modelContext) private var context
+    @Query(sort: \Budget.createdAt) private var budgets: [Budget]
+    // Observing transactions keeps budget progress live as spending changes.
+    @Query private var transactions: [Transaction]
     @State private var editing: Budget?
     @State private var showNew = false
     @State private var pendingDelete: Budget?
 
-    private var totalBudget: Double { model.budgets.reduce(0) { $0 + $1.amount.doubleValue } }
-    private var totalSpent: Double { model.budgets.reduce(0) { $0 + (model.budgetSpending[$1.id]?.currentSpending.doubleValue ?? 0) } }
+    private var totalBudget: Double { budgets.reduce(0) { $0 + $1.amount } }
+    private var totalSpent: Double { budgets.reduce(0) { $0 + $1.spent() } }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
-                    if model.budgets.isEmpty {
+                    if budgets.isEmpty {
                         EmptyStateView(emoji: "🎯", title: "No budgets yet",
                                        message: "Set a spending goal for a category and we'll cheer you on as you stick to it.",
                                        actionTitle: "Create a budget") { showNew = true }
@@ -21,9 +25,9 @@ struct BudgetsView: View {
                     } else {
                         overview
                         LazyVStack(spacing: 14) {
-                            ForEach(model.budgets) { budget in
+                            ForEach(budgets) { budget in
                                 Button { editing = budget } label: {
-                                    BudgetCard(budget: budget, spending: model.budgetSpending[budget.id])
+                                    BudgetCard(budget: budget)
                                 }
                                 .buttonStyle(PressableStyle())
                                 .contextMenu {
@@ -38,7 +42,6 @@ struct BudgetsView: View {
                 .padding(.bottom, 24)
             }
             .background(Color(.systemGroupedBackground))
-            .refreshable { await model.loadBudgets() }
             .navigationTitle("Budgets")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -51,9 +54,8 @@ struct BudgetsView: View {
             .confirmationDialog("Delete this budget?", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
                                 titleVisibility: .visible, presenting: pendingDelete) { budget in
                 Button("Delete \(budget.name)", role: .destructive) {
-                    Task {
-                        do { try await model.deleteBudget(budget) } catch { model.lastError = error.localizedDescription }
-                    }
+                    withAnimation { context.delete(budget) }
+                    try? context.save()
                 }
             }
         }
@@ -61,7 +63,7 @@ struct BudgetsView: View {
 
     private var overview: some View {
         let progress = totalBudget > 0 ? totalSpent / totalBudget : 0
-        let onTrack = model.budgets.filter { (model.budgetSpending[$0.id]?.percentageUsed.doubleValue ?? 0) < 100 }.count
+        let onTrack = budgets.filter { $0.progress() < 1 }.count
         return HStack(spacing: 20) {
             RingGauge(progress: progress, lineWidth: 14) {
                 VStack(spacing: 0) {
@@ -73,7 +75,7 @@ struct BudgetsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("\(totalSpent.currency(compact: true)) of \(totalBudget.currency(compact: true))").font(.headline).monospacedDigit()
                 Text("\(max(0, totalBudget - totalSpent).currency()) left to spend").font(.subheadline).foregroundStyle(.secondary)
-                Text(onTrack == model.budgets.count ? "🏆 All budgets on track!" : "✅ \(onTrack) of \(model.budgets.count) on track")
+                Text(onTrack == budgets.count ? "🏆 All budgets on track!" : "✅ \(onTrack) of \(budgets.count) on track")
                     .font(.caption.weight(.bold))
                     .padding(.horizontal, 10).padding(.vertical, 5)
                     .background(Theme.income.opacity(0.14), in: .capsule)
@@ -87,12 +89,12 @@ struct BudgetsView: View {
 
 struct BudgetCard: View {
     let budget: Budget
-    let spending: BudgetSpending?
 
     var body: some View {
-        let progress = (spending?.percentageUsed.doubleValue ?? 0) / 100
-        let warning = budget.warningThreshold.doubleValue / 100
-        let remaining = spending?.remaining.doubleValue ?? budget.amount.doubleValue
+        let spent = budget.spent()
+        let progress = budget.progress()
+        let warning = budget.warningThreshold / 100
+        let remaining = budget.amount - spent
         let status: (String, Color) = progress >= 1 ? ("Over budget 😬", Theme.expense)
             : progress >= warning ? ("Getting close 👀", Theme.warning)
             : ("On track 🙌", Theme.income)
@@ -110,7 +112,7 @@ struct BudgetCard: View {
             }
             ProgressCapsule(progress: progress, warning: warning, height: 12)
             HStack {
-                Text("\((spending?.currentSpending ?? 0).currency()) spent").foregroundStyle(.secondary)
+                Text("\(spent.currency()) spent").foregroundStyle(.secondary)
                 Spacer()
                 Text(remaining >= 0 ? "\(remaining.currency()) left" : "\(abs(remaining).currency()) over")
                     .fontWeight(.semibold)
@@ -124,22 +126,21 @@ struct BudgetCard: View {
 }
 
 struct BudgetEditor: View {
-    @Environment(AppModel.self) private var model
+    @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
+    @Query(sort: \Category.sortOrder) private var categories: [Category]
     let budget: Budget?
 
     @State private var name = ""
     @State private var amount: Double?
-    @State private var categoryId: Int?
+    @State private var category: Category?
     @State private var period = "MONTHLY"
     @State private var startDate = Calendar.current.dateInterval(of: .month, for: .now)?.start ?? .now
     @State private var hasEndDate = false
     @State private var endDate = Calendar.current.date(byAdding: .month, value: 6, to: .now) ?? .now
     @State private var warning: Double = 80
-    @State private var isSaving = false
-    @State private var error: String?
 
-    private var canSave: Bool { !name.isEmpty && (amount ?? 0) > 0 && categoryId != nil }
+    private var canSave: Bool { !name.isEmpty && (amount ?? 0) > 0 && category != nil }
 
     var body: some View {
         NavigationStack {
@@ -148,12 +149,12 @@ struct BudgetEditor: View {
                     TextField("Name, e.g. Eating out", text: $name)
                     TextField("Amount", value: $amount, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
                         .keyboardType(.decimalPad)
-                    Picker("Category", selection: $categoryId) {
-                        Text("Choose…").tag(Int?.none)
-                        ForEach(model.categories) { Text("\(CategoryStyle.forName($0.name).emoji) \($0.name)").tag(Optional($0.id)) }
+                    Picker("Category", selection: $category) {
+                        Text("Choose…").tag(Category?.none)
+                        ForEach(categories.filter { !$0.isIncome }) { Text("\(CategoryStyle.forName($0.name).emoji) \($0.name)").tag(Optional($0)) }
                     }
-                    .onChange(of: categoryId) { _, id in
-                        if name.isEmpty, let c = model.categories.first(where: { $0.id == id }) { name = c.name }
+                    .onChange(of: category) { _, c in
+                        if name.isEmpty, let c { name = c.name }
                     }
                 }
                 Section("Timing") {
@@ -179,16 +180,13 @@ struct BudgetEditor: View {
                 } footer: {
                     Text("We'll flag this budget once you've used this much of it.")
                 }
-                if let error {
-                    Section { Text(error).foregroundStyle(Theme.expense) }
-                }
             }
             .navigationTitle(budget == nil ? "New budget" : "Edit budget")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save", action: save).bold().disabled(!canSave || isSaving)
+                    Button("Save", action: save).bold().disabled(!canSave)
                 }
             }
             .onAppear(perform: load)
@@ -198,31 +196,26 @@ struct BudgetEditor: View {
     private func load() {
         guard let budget else { return }
         name = budget.name
-        amount = budget.amount.doubleValue
-        categoryId = budget.category?.id
+        amount = budget.amount
+        category = budget.category
         period = budget.period.uppercased()
-        if let s = budget.startDate { startDate = s }
+        startDate = budget.startDate
         if let e = budget.endDate { hasEndDate = true; endDate = e }
-        warning = budget.warningThreshold.doubleValue
+        warning = budget.warningThreshold
     }
 
     private func save() {
-        guard let categoryId, let amount else { return }
-        isSaving = true
-        let request = BudgetRequest(
-            name: name, amount: Decimal(amount), categoryId: categoryId, period: period,
-            startDate: DateParsing.localDateString(startDate),
-            endDate: hasEndDate ? DateParsing.localDateString(endDate) : nil,
-            warningThreshold: Decimal(warning)
-        )
-        Task {
-            do {
-                try await model.saveBudget(id: budget?.id, request: request)
-                dismiss()
-            } catch {
-                self.error = error.localizedDescription
-            }
-            isSaving = false
-        }
+        guard let category, let amount else { return }
+        let target = budget ?? Budget(name: name, amount: amount, category: category)
+        target.name = name
+        target.amount = amount
+        target.category = category
+        target.period = period
+        target.startDate = startDate
+        target.endDate = hasEndDate ? endDate : nil
+        target.warningThreshold = warning
+        if budget == nil { context.insert(target) }
+        try? context.save()
+        dismiss()
     }
 }
