@@ -222,8 +222,8 @@ final class AppModel {
     // MARK: - Profile
 
     func updateIncome(_ income: Decimal, payday: Int) async throws {
-        // This endpoint resolves the principal as `UserDetails` while the JWT filter sets a String,
-        // so it can 401 even with a valid token; don't treat that as session expiry.
+        // Older backends resolved this endpoint's principal as `UserDetails` and 401'd even with a
+        // valid token (fixed on backend-fixes-for-ios); don't treat that as session expiry.
         do {
             let _: Empty = try await api.send("/api/users/income", method: "PATCH",
                                               body: IncomeRequest(monthlyIncome: income, paydayDay: payday),

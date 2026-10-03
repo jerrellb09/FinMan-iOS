@@ -53,10 +53,16 @@ struct Analytics {
     var spentLastMonth: Double { Self.spending(lastMonth) }
     var incomeThisMonth: Double { Self.income(thisMonth) }
 
-    /// Fractional change vs. last month (e.g. -0.12 = spent 12% less).
+    /// Spending over the same span of last month (day 1 through today's day-of-month).
+    var spentLastMonthToDate: Double {
+        let day = calendar.component(.day, from: now)
+        return Self.spending(lastMonth.filter { calendar.component(.day, from: $0.date) <= day })
+    }
+
+    /// Fractional month-to-date change vs. last month (e.g. -0.12 = spent 12% less so far).
     var spendingChange: Double? {
-        guard spentLastMonth > 0 else { return nil }
-        return (spentThisMonth - spentLastMonth) / spentLastMonth
+        guard spentLastMonthToDate > 0 else { return nil }
+        return (spentThisMonth - spentLastMonthToDate) / spentLastMonthToDate
     }
 
     func byCategory(_ txs: [Transaction]? = nil) -> [CategorySlice] {

@@ -84,8 +84,8 @@ struct DashboardView: View {
                 HStack(spacing: 6) {
                     Image(systemName: change <= 0 ? "hand.thumbsup.fill" : "flame.fill")
                     Text(change <= 0
-                         ? "You're spending \(abs(change).formatted(.percent.precision(.fractionLength(0)))) less than last month. Nice!"
-                         : "Spending is up \(change.formatted(.percent.precision(.fractionLength(0)))) vs last month.")
+                         ? "You're spending \(abs(change).formatted(.percent.precision(.fractionLength(0)))) less than this time last month. Nice!"
+                         : "Spending is up \(change.formatted(.percent.precision(.fractionLength(0)))) vs this time last month.")
                 }
                 .font(.footnote.weight(.semibold))
                 .padding(.horizontal, 12).padding(.vertical, 8)

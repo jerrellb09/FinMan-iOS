@@ -39,12 +39,8 @@ The project uses Xcode's folder-synchronized groups, so new files under `FinManA
 
 Charts and analytics are computed on the device from transactions, because the backend's `InsightService` aggregation methods are still stubs that return `null`.
 
-## Known backend gaps (as of this branch)
+## Backend fixes required
 
-These are server-side issues the app works around or surfaces as errors:
+The app needs the fixes on the `backend-fixes-for-ios` branch: the `jackson-annotations` 2.22 pin, the implemented `TransactionService`, bill creation without an `id`, `/api/users/*` auth, and positive budget spending. Without them, most endpoints return 500, transactions are empty, and creating bills or saving income fails.
 
-- `jackson-annotations` resolves to 2.21 while Jackson 3.2.2 needs 2.22. As a result, endpoints that serialise entities fail with `NoClassDefFoundError: JsonApplyView` (500).
-- `TransactionService.addManualTransaction / updateTransaction / deleteTransaction` are placeholders, so manual transactions aren't persisted.
-- `POST /api/bills` fails because `Bill` has `@JsonIdentityInfo`, which requires an `id` in the request body. Updates work because the app sends the `id`.
-- `/api/users/*` endpoints take `@AuthenticationPrincipal UserDetails`, but the JWT filter sets a `String` principal, so they always return 401. Income editing therefore fails.
-- `/api/csv/import` always imports into the demo user, so the app doesn't expose CSV import.
+`/api/csv/import` still always imports into the demo user, so the app doesn't expose CSV import.
