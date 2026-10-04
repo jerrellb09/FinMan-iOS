@@ -119,11 +119,16 @@ APP="$WORK/DerivedData/Build/Products/Debug-iphoneos/FinManApp.app"
 
 # 4. Install over the existing app (keeps your data). Retry in case the phone is locked or asleep.
 for attempt in 1 2 3; do
-  if xcrun devicectl device install app --device "$DEVICE_UDID" "$APP"; then
+  if xcrun devicectl device install app --device "$DEVICE_UDID" "$APP" > "$WORK/install.log" 2>&1; then
     expires=$(date -v+7d "+%a %b %-d")
     notify "FinMan refreshed ✅" "Installed on your iPhone. Good until about $expires."
     echo "=== Refresh completed: $(date) (valid until ~$expires) ==="
     exit 0
+  fi
+  grep -E "NSLocalizedFailureReason|NSLocalizedRecoverySuggestion" "$WORK/install.log" | sort -u
+  # Free Apple IDs allow only 3 self-signed apps per device; retrying can't fix that.
+  if grep -q "maximum number of installed apps" "$WORK/install.log"; then
+    fail "Free Apple ID limit: 3 sideloaded apps max on the iPhone. Delete one, then run the refresh again."
   fi
   echo "Install attempt $attempt failed; retrying in 2 minutes…"
   sleep 120
