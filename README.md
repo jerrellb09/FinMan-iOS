@@ -19,7 +19,7 @@ Apps signed with a free Apple ID stop opening after 7 days. `scripts/refresh-on-
 
 One-time setup:
 1. Plug in the iPhone, open the project in Xcode, choose your Personal Team under Signing & Capabilities, and press Run once. Trust the developer on the phone under Settings → General → VPN & Device Management.
-2. In Xcode → Window → Devices and Simulators, select the iPhone and tick **Connect via network** so it works without the cable.
+2. Unplug the iPhone, unlock it, and open Xcode → Window → Devices and Simulators (⇧⌘2). Select the iPhone and wait until it shows as connected over the network. Recent Xcode has no "Connect via network" checkbox; once the phone has been paired by cable, this sets up Wi-Fi. Check with `xcrun devicectl list devices`.
 3. Run `ios/scripts/refresh-on-device.sh --install`. It copies the script to `~/bin/refresh-finman-ios.sh` and schedules it with launchd for Sundays and Wednesdays at 7 PM. Running twice a week means one missed run doesn't let the app expire.
 
 Run it now with `launchctl kickstart -k gui/$(id -u)/com.jerrell.finman-ios-refresh`. Check results in `~/Library/Logs/finman-ios-refresh.log`; you also get a macOS notification for each run. Remove the schedule with `--uninstall`.
