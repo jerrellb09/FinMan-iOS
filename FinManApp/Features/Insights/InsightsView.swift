@@ -177,6 +177,7 @@ struct AICoachCard: View {
     @Query private var transactions: [Transaction]
     @Query private var budgets: [Budget]
     @Query private var bills: [Bill]
+    @Query(sort: \Payslip.payDate, order: .reverse) private var payslips: [Payslip]
     @AppStorage(ProfileKey.name) private var name = ""
     @AppStorage(ProfileKey.monthlyIncome) private var monthlyIncome = 0.0
 
@@ -270,7 +271,8 @@ struct AICoachCard: View {
         results[current] = nil
         defer { loading = false }
         let snapshot = Coach.Snapshot(name: name, monthlyIncome: monthlyIncome,
-                                      analytics: Analytics(transactions: transactions), budgets: budgets, bills: bills)
+                                      analytics: Analytics(transactions: transactions), budgets: budgets, bills: bills,
+                                      payslip: payslips.first)
         do {
             try await Coach.advise(current, snapshot: snapshot) { text in
                 results[current] = text

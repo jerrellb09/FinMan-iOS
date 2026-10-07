@@ -9,11 +9,22 @@ struct DashboardView: View {
     @Query(sort: \Account.createdAt) private var accounts: [Account]
     @Query(sort: \Budget.createdAt) private var budgets: [Budget]
     @Query private var bills: [Bill]
+    @Query(sort: \Payslip.payDate, order: .reverse) private var payslips: [Payslip]
     @AppStorage(ProfileKey.name) private var name = ""
     @AppStorage(ProfileKey.monthlyIncome) private var monthlyIncome = 0.0
 
     @State private var showSettings = false
     @State private var quickAdd: QuickAddKind?
+    @State private var showPay = Self.launchToPay
+
+    /// Debug builds accept `-pay` to open on the Paycheck screen.
+    private static var launchToPay: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.arguments.contains("-pay")
+        #else
+        return false
+        #endif
+    }
 
     private var analytics: Analytics { Analytics(transactions: transactions) }
     private var totalBalance: Double { accounts.reduce(0) { $0 + $1.balance } }
@@ -26,6 +37,7 @@ struct DashboardView: View {
                     heroCard
                     quickActions
                     healthCard
+                    paycheckCard
                     spendingPaceCard
                     upcomingBills
                     budgetsSnapshot
@@ -49,6 +61,7 @@ struct DashboardView: View {
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .navigationDestination(isPresented: $showPay) { PayView() }
             .sheet(item: $quickAdd) { kind in
                 TransactionEditor(transaction: nil, startAsIncome: kind == .income)
             }
@@ -148,7 +161,8 @@ struct DashboardView: View {
     // MARK: Health
 
     private var healthCard: some View {
-        let score = analytics.healthScore(budgets: budgets, bills: bills, monthlyIncome: monthlyIncome)
+        let score = analytics.healthScore(budgets: budgets, bills: bills, monthlyIncome: monthlyIncome,
+                                          payrollSavings: payslips.first?.monthlySavings ?? 0)
         let mood = score >= 80 ? ("🤩", "Crushing it") : score >= 60 ? ("😊", "Looking good") : score >= 40 ? ("😐", "Room to grow") : ("😬", "Let's regroup")
         let streak = analytics.noSpendStreak
 
@@ -176,6 +190,33 @@ struct DashboardView: View {
             Spacer(minLength: 0)
         }
         .card()
+    }
+
+    // MARK: Paycheck
+
+    private var paycheckCard: some View {
+        NavigationLink { PayView() } label: {
+            HStack(spacing: 14) {
+                CategoryIcon(name: "Income", size: 44)
+                VStack(alignment: .leading, spacing: 4) {
+                    if let latest = payslips.first {
+                        Text("Paycheck").font(.headline)
+                        Text("\(latest.netPay.currency()) take-home · \(latest.effectiveTaxRate.formatted(.percent.precision(.fractionLength(0)))) to taxes")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        PayBreakdownCard(payslip: latest, compact: true)
+                            .padding(.top, 4)
+                    } else {
+                        Text("Add a payslip").font(.headline)
+                        Text("See your taxes, deductions and real take-home pay.").font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.footnote.bold()).foregroundStyle(.tertiary)
+            }
+            .foregroundStyle(.primary)
+            .card()
+        }
+        .buttonStyle(PressableStyle())
     }
 
     // MARK: Spending pace

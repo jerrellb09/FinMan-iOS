@@ -31,6 +31,7 @@ enum Coach {
         let analytics: Analytics
         let budgets: [Budget]
         let bills: [Bill]
+        var payslip: Payslip?
 
         /// Compact, factual summary the model reasons over.
         var summary: String {
@@ -56,6 +57,17 @@ enum Coach {
             lines.append("Monthly bills total \(bills.reduce(0) { $0 + $1.amount }.currency()); unpaid: "
                          + (unpaid.isEmpty ? "none" : unpaid.map { "\($0.name) \($0.amount.currency()) due in \($0.daysUntilDue()) days" }.joined(separator: ", ")))
             lines.append("No-spend streak: \(a.noSpendStreak) days")
+            if let p = payslip {
+                let employer = p.employer.isEmpty ? "" : " from \(p.employer)"
+                lines.append("Latest paycheck\(employer), paid \(p.frequency.label.lowercased()): gross \(p.grossPay.currency()), "
+                             + "taxes \(p.taxes.currency()) (\(p.effectiveTaxRate.formatted(.percent.precision(.fractionLength(1)))) of gross), "
+                             + "deductions \(p.deductions.currency()), take-home \(p.netPay.currency())")
+                let deductions = p.lines.filter { $0.kind == .preTax || $0.kind == .postTax }
+                if !deductions.isEmpty {
+                    lines.append("Paycheck deductions: " + deductions.map { "\($0.name) \($0.amount.currency())\($0.isSavings ? " (savings)" : "")" }.joined(separator: ", "))
+                }
+                if p.monthlySavings > 0 { lines.append("Saving through payroll (retirement/HSA): \(p.monthlySavings.currency()) a month") }
+            }
             return lines.joined(separator: "\n")
         }
     }
@@ -101,13 +113,18 @@ enum Coach {
             if let top = a.byCategory().first {
                 tips.append("\(CategoryStyle.forName(top.name).emoji) \(top.name) is your biggest category this month at \(top.amount.currency()).")
             }
-            let income = max(a.incomeThisMonth, s.monthlyIncome)
+            let payrollSavings = s.payslip?.monthlySavings ?? 0
+            let income = max(a.incomeThisMonth, s.monthlyIncome) + payrollSavings
             if income > 0 {
                 let rate = (income - a.spentThisMonth) / income
                 tips.append(rate >= 0.2 ? "💪 You're on pace to save \(rate.formatted(.percent.precision(.fractionLength(0)))) of your income. Great work!"
                                         : "🎯 Aim to keep at least 20% of income unspent. You're at \(max(0, rate).formatted(.percent.precision(.fractionLength(0)))) so far.")
             }
             if a.noSpendStreak >= 2 { tips.append("🔥 \(a.noSpendStreak)-day no-spend streak. Keep it going!") }
+            if let p = s.payslip, p.grossPay > 0 {
+                tips.append("🧾 Taxes take \(p.effectiveTaxRate.formatted(.percent.precision(.fractionLength(0)))) of your gross pay. You keep \(p.netPay.currency()) of each \(p.grossPay.currency()) paycheck.")
+                if payrollSavings > 0 { tips.append("🏦 You're saving \(payrollSavings.currency()) a month through payroll before your pay even lands.") }
+            }
         case .budgets:
             let trend = a.monthlyTrend(months: 4).dropLast()
             let months = Double(max(trend.count, 1))

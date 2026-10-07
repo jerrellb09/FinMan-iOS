@@ -6,6 +6,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \Account.createdAt) private var accounts: [Account]
     @Query private var transactions: [Transaction]
+    @Query(sort: \Payslip.payDate, order: .reverse) private var payslips: [Payslip]
 
     @AppStorage(ProfileKey.name) private var name = ""
     @AppStorage(ProfileKey.monthlyIncome) private var monthlyIncome = 0.0
@@ -39,13 +40,20 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    NavigationLink { PayView() } label: {
+                        LabeledContent {
+                            Text(payslips.first.map { "\($0.netPay.currency()) take-home" } ?? "Add payslip")
+                        } label: {
+                            Label("Paycheck", systemImage: "doc.text.magnifyingglass")
+                        }
+                    }
                     TextField("Monthly income", value: $monthlyIncome, format: .currency(code: currency))
                         .keyboardType(.decimalPad)
                     Stepper("Payday: day \(payday)", value: $payday, in: 1...31)
                 } header: {
                     Text("Income")
                 } footer: {
-                    Text("Used to work out what's left after bills and for your health score.")
+                    Text("Used to work out what's left after bills and for your health score. Saving a payslip can fill these in from your take-home pay.")
                 }
 
                 Section {

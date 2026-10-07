@@ -19,6 +19,8 @@ enum DataStore {
 
     /// Wipes every record and reseeds the default categories.
     static func eraseAll(_ context: ModelContext) {
+        try? context.delete(model: PayslipItem.self)
+        try? context.delete(model: Payslip.self)
         try? context.delete(model: Transaction.self)
         try? context.delete(model: Bill.self)
         try? context.delete(model: Budget.self)
@@ -102,7 +104,47 @@ enum DataStore {
             if dueDay < today && name != "Fiber internet" { bill.lastPaidDate = now }
             context.insert(bill)
         }
+
+        loadSamplePayslips(context, monthlyIncome: monthlyIncome)
         try? context.save()
+    }
+
+    /// Two biweekly payslips whose take-home matches the sample income; the newer one raises the 401(k) from 5% to 6%.
+    private static func loadSamplePayslips(_ context: ModelContext, monthlyIncome: Double) {
+        let cal = Calendar.current
+        let now = Date.now
+        let flat = [("Medical", 118.50), ("Dental", 14.20)]
+        let rates = [("Federal income tax", 0.11, PayLineKind.tax), ("Social Security", 0.062, .tax), ("Medicare", 0.0145, .tax), ("State income tax", 0.045, .tax)]
+        let gross = ((monthlyIncome * 12 / 26 + flat.reduce(0) { $0 + $1.1 }) / (1 - rates.reduce(0) { $0 + $1.1 } - 0.06)).rounded(toPlaces: 2)
+        let paychecksSoFar = Double((cal.ordinality(of: .day, in: .year, for: now) ?? 1) / 14 + 1)
+
+        for (daysAgo, retirement) in [(14, 0.05), (0, 0.06)] {
+            guard let payDate = cal.date(byAdding: .day, value: -daysAgo, to: now) else { continue }
+            let count = paychecksSoFar - Double(daysAgo / 14)
+            var lines: [PayslipDraft.Line] = [.init(name: "Regular salary", kind: .earning, amount: gross, ytd: gross * count)]
+            for (name, rate, kind) in rates {
+                let amount = (gross * rate).rounded(toPlaces: 2)
+                lines.append(.init(name: name, kind: kind, amount: amount, ytd: (amount * count).rounded(toPlaces: 2)))
+            }
+            let k401 = (gross * retirement).rounded(toPlaces: 2)
+            lines.append(.init(name: "401(k)", kind: .preTax, amount: k401, ytd: (k401 * count).rounded(toPlaces: 2), isSavings: true))
+            for (name, amount) in flat {
+                lines.append(.init(name: name, kind: .preTax, amount: amount, ytd: (amount * count).rounded(toPlaces: 2)))
+            }
+            let match = (gross * 0.04).rounded(toPlaces: 2)
+            lines.append(.init(name: "Employer 401(k) match", kind: .employer, amount: match, ytd: (match * count).rounded(toPlaces: 2)))
+
+            var draft = PayslipDraft(employer: "Northwind Analytics, Inc.", payDate: payDate,
+                                     periodStart: cal.date(byAdding: .day, value: -19, to: payDate),
+                                     periodEnd: cal.date(byAdding: .day, value: -6, to: payDate),
+                                     frequency: .biweekly, grossPay: gross, lines: lines, source: .saved)
+            draft.netPay = draft.computedNet.rounded(toPlaces: 2)
+            draft.ytdGross = (gross * count).rounded(toPlaces: 2)
+            draft.ytdNet = (draft.netPay * count).rounded(toPlaces: 2)
+            let payslip = Payslip()
+            context.insert(payslip)
+            payslip.apply(draft)
+        }
     }
 
     /// CSV of every transaction, newest first, for sharing/backups.

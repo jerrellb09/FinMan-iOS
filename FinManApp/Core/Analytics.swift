@@ -125,8 +125,9 @@ struct Analytics {
     }
 
     /// 0–100 "financial health" score blending savings rate, budget adherence and bill status.
-    func healthScore(budgets: [Budget], bills: [Bill], monthlyIncome: Double) -> Int {
-        let income = max(incomeThisMonth, monthlyIncome)
+    /// `payrollSavings` is the monthly 401(k)/HSA money taken out before pay lands, so it never shows up as income.
+    func healthScore(budgets: [Budget], bills: [Bill], monthlyIncome: Double, payrollSavings: Double = 0) -> Int {
+        let income = max(incomeThisMonth, monthlyIncome) + payrollSavings
         let savingsRate = income > 0 ? max(0, min(1, (income - spentThisMonth) / income)) : 0.5
         let savingsPoints = min(1, savingsRate / 0.2) * 40 // a 20%+ savings rate earns full marks
 

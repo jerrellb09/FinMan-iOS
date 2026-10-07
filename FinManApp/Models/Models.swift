@@ -183,5 +183,5 @@ final class Bill {
 
 /// Everything the app persists, in one place for the model container.
 enum AppSchema {
-    static let models: [any PersistentModel.Type] = [Account.self, Category.self, Transaction.self, Budget.self, Bill.self]
+    static let models: [any PersistentModel.Type] = [Account.self, Category.self, Transaction.self, Budget.self, Bill.self, Payslip.self, PayslipItem.self]
 }
