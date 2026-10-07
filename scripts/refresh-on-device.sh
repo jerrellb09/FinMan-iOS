@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Rebuilds FinMan (ios-standalone branch) and reinstalls it on your iPhone so the free
+# Rebuilds FinMan (main branch of FinMan-iOS) and reinstalls it on your iPhone so the free
 # Apple ID's 7-day signing never lapses. Reinstalling keeps the app's data.
 #
 #   refresh-on-device.sh             build + install now
@@ -9,8 +9,8 @@
 # Log: ~/Library/Logs/finman-ios-refresh.log
 set -euo pipefail
 
-REPO="$HOME/repos/FinManApp"
-BRANCH="ios-standalone"
+REPO="$HOME/repos/FinMan-iOS"
+BRANCH="main"
 TEAM_ID="QUXAAFMP4V"                 # Jerrell Boone (Personal Team)
 DEVICE_UDID="${DEVICE_UDID:-}"       # empty = first paired physical iPhone
 WORK="$HOME/Library/Developer/FinManRefresh"
@@ -100,7 +100,7 @@ echo "Device: $DEVICE_UDID"
 
 # 3. Build and sign (automatic signing renews the free provisioning profile).
 if ! xcodebuild \
-  -project "$SRC/ios/FinManApp.xcodeproj" \
+  -project "$SRC/FinManApp.xcodeproj" \
   -scheme FinManApp \
   -configuration Debug \
   -destination "id=$DEVICE_UDID" \

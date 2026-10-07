@@ -7,7 +7,7 @@ A native SwiftUI budgeting app that runs entirely on the iPhone. There's no serv
 
 ## Run it
 
-Open `ios/FinManApp.xcodeproj` and run the **FinManApp** scheme. The first launch shows onboarding: enter your name, income and payday, then either start fresh or explore with sample data.
+Open `FinManApp.xcodeproj` and run the **FinManApp** scheme. The first launch shows onboarding: enter your name, income and payday, then either start fresh or explore with sample data.
 
 Debug-only launch arguments:
 - `-sampleData` resets the store to fresh sample data and skips onboarding.
@@ -20,7 +20,7 @@ Apps signed with a free Apple ID stop opening after 7 days. `scripts/refresh-on-
 One-time setup:
 1. Plug in the iPhone, open the project in Xcode, choose your Personal Team under Signing & Capabilities, and press Run once. Trust the developer on the phone under Settings → General → VPN & Device Management.
 2. Unplug the iPhone, unlock it, and open Xcode → Window → Devices and Simulators (⇧⌘2). Select the iPhone and wait until it shows as connected over the network. Recent Xcode has no "Connect via network" checkbox; once the phone has been paired by cable, this sets up Wi-Fi. Check with `xcrun devicectl list devices`.
-3. Run `ios/scripts/refresh-on-device.sh --install`. It copies the script to `~/bin/refresh-finman-ios.sh` and schedules it with launchd for Sundays and Wednesdays at 7 PM. Running twice a week means one missed run doesn't let the app expire.
+3. Run `scripts/refresh-on-device.sh --install`. It copies the script to `~/bin/refresh-finman-ios.sh` and schedules it with launchd for Sundays and Wednesdays at 7 PM. Running twice a week means one missed run doesn't let the app expire.
 
 Run it now with `launchctl kickstart -k gui/$(id -u)/com.jerrell.finman-ios-refresh`. Check results in `~/Library/Logs/finman-ios-refresh.log`; you also get a macOS notification for each run. Remove the schedule with `--uninstall`.
 
@@ -48,4 +48,4 @@ FinManApp/
 
 The project uses Xcode's folder-synchronized groups, so new files under `FinManApp/` are picked up without editing the project file.
 
-The version of this app that talks to the Spring Boot backend lives on the `ios-app` branch.
+The version of this app that talks to the Spring Boot backend lives on the `ios-app` branch of [FinManApp](https://github.com/jerrellb09/FinManApp), which also holds the Spring Boot backend. This repo was split out of FinManApp's `ios/` folder with its history.
