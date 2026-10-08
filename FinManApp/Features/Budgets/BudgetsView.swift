@@ -8,6 +8,7 @@ struct BudgetsView: View {
     @Query private var transactions: [Transaction]
     @State private var editing: Budget?
     @State private var showNew = false
+    @State private var showImport = false
     @State private var pendingDelete: Budget?
 
     private var totalBudget: Double { budgets.reduce(0) { $0 + $1.amount } }
@@ -22,6 +23,12 @@ struct BudgetsView: View {
                                        message: "Set a spending goal for a category and we'll cheer you on as you stick to it.",
                                        actionTitle: "Create a budget") { showNew = true }
                             .card()
+                        Button { showImport = true } label: {
+                            Label("Import from a spreadsheet", systemImage: "tablecells")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
                     } else {
                         overview
                         LazyVStack(spacing: 14) {
@@ -45,11 +52,19 @@ struct BudgetsView: View {
             .navigationTitle("Budgets")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { showNew = true } label: { Image(systemName: "plus.circle.fill").font(.title3) }
-                        .accessibilityLabel("New budget")
+                    Menu {
+                        Button { showNew = true } label: { Label("New budget", systemImage: "plus") }
+                        Button { showImport = true } label: { Label("Import from spreadsheet", systemImage: "tablecells") }
+                    } label: {
+                        Image(systemName: "plus.circle.fill").font(.title3)
+                    } primaryAction: {
+                        showNew = true
+                    }
+                    .accessibilityLabel("New budget")
                 }
             }
             .sheet(isPresented: $showNew) { BudgetEditor(budget: nil) }
+            .spreadsheetImporter(isPresented: $showImport)
             .sheet(item: $editing) { BudgetEditor(budget: $0) }
             .confirmationDialog("Delete this budget?", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
                                 titleVisibility: .visible, presenting: pendingDelete) { budget in

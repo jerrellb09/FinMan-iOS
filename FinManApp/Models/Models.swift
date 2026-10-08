@@ -38,6 +38,8 @@ final class Category {
     var name: String = ""
     var isIncome: Bool = false
     var sortOrder: Int = 0
+    /// Added by the user or an import, as opposed to one of the built-in defaults.
+    var isCustom: Bool = false
 
     @Relationship(deleteRule: .nullify, inverse: \Transaction.category)
     var transactions: [Transaction]? = []
@@ -53,12 +55,13 @@ final class Category {
     }
 
     /// Same defaults the Spring Boot backend seeds, plus Income.
-    static let defaults: [(String, Bool)] = [
+    nonisolated static let defaults: [(String, Bool)] = [
         ("Housing", false), ("Transportation", false), ("Food", false), ("Entertainment", false),
         ("Healthcare", false), ("Personal", false), ("Education", false), ("Savings", false),
         ("Debt", false), ("Travel", false), ("Shopping", false), ("Utilities", false),
         ("Subscriptions", false), ("Income", true),
     ]
+    nonisolated static var defaultNames: [String] { defaults.map(\.0) }
 }
 
 @Model
