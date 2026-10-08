@@ -57,8 +57,6 @@ struct BudgetsView: View {
                         Button { showImport = true } label: { Label("Import from spreadsheet", systemImage: "tablecells") }
                     } label: {
                         Image(systemName: "plus.circle.fill").font(.title3)
-                    } primaryAction: {
-                        showNew = true
                     }
                     .accessibilityLabel("New budget")
                 }
