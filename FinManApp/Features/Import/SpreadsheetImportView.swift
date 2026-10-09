@@ -273,6 +273,8 @@ struct SpreadsheetImportView: View {
                 if draft.transactions.count > 12 {
                     Text("and \(draft.transactions.count - 12) more").font(.caption).foregroundStyle(.secondary)
                 }
+                Button("These are bills, not transactions", systemImage: "calendar.badge.clock") { convertTransactionsToBills() }
+                    .font(.subheadline)
             } header: {
                 Text("Transactions")
             } footer: {
@@ -282,6 +284,24 @@ struct SpreadsheetImportView: View {
                          + " They aren't added to an account, so your balances don't change.")
                 }
             }
+        }
+    }
+
+    /// Turns the transaction list into bills (and income), one per name, using the latest row's amount and day.
+    private func convertTransactionsToBills() {
+        let calendar = Calendar.current
+        let latestByName = Dictionary(grouping: draft.transactions) { $0.title.lowercased() }
+            .compactMap { $0.value.max { $0.date < $1.date } }
+            .sorted { calendar.component(.day, from: $0.date) < calendar.component(.day, from: $1.date) }
+        let converted = latestByName.map { entry in
+            BudgetImportDraft.Item(kind: entry.amount > 0 && entry.category == "Income" ? .income : .bill,
+                                   name: entry.title, amount: abs(entry.amount),
+                                   category: entry.amount > 0 && entry.category == "Income" ? "Income" : entry.category ?? "",
+                                   dueDay: calendar.component(.day, from: entry.date))
+        }
+        withAnimation {
+            draft.items += converted
+            draft.transactions = []
         }
     }
 
@@ -335,6 +355,7 @@ struct SpreadsheetImportView: View {
                     ?? { let new = Bill(name: item.name, amount: item.amount, dueDay: item.dueDay ?? 1); context.insert(new); return new }()
                 bill.amount = item.amount
                 if let day = item.dueDay { bill.dueDay = day }
+                if let autoPay = item.autoPay { bill.autoPay = autoPay }
                 bill.category = category(item.category) ?? bill.category
                 // The sheet already shows it paid in full this month.
                 if let actual = item.actual, actual >= item.amount - 0.005 { bill.lastPaidDate = .now }
@@ -407,6 +428,10 @@ private struct ImportItemRow: View {
                                 ForEach(1...31, id: \.self) { Text("Day \($0)").tag($0) }
                             }
                         } label: { chip("Due day \(item.dueDay ?? 1)", symbol: "calendar.badge.clock") }
+                        Button { item.autoPay = !(item.autoPay ?? false) } label: {
+                            chip(item.autoPay == true ? "Autopay" : "Manual", symbol: item.autoPay == true ? "arrow.triangle.2.circlepath" : "hand.tap")
+                        }
+                        .buttonStyle(.plain)
                     case .income:
                         EmptyView()
                     }

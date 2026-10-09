@@ -30,6 +30,8 @@ nonisolated struct BudgetImportDraft: Sendable {
         var dueDay: Int?
         /// What the sheet says was actually spent (or received) so far.
         var actual: Double?
+        /// For bills: whether the sheet says it's paid automatically ("Auto") or by hand ("Self"), when it says.
+        var autoPay: Bool?
 
         var monthlyAmount: Double {
             switch period {
@@ -172,14 +174,14 @@ nonisolated enum BudgetImporter {
         func has(_ parts: String...) -> Bool { parts.contains(where: l.contains) }
         func word(_ candidates: String...) -> Bool { candidates.contains(where: words.contains) }
 
-        if has("due") { return .due }
+        if has("due", "day of month") { return .due }
         if has("actual", "spent", "so far", "to date") || word("real") { return .actual }
         if has("debit", "withdrawal", "outflow", "money out", "paid out") { return .debit }
         if (has("credit", "deposit", "inflow", "money in")) && !has("credit card") { return .credit }
         if has("frequency", "how often", "cadence", "interval") || words == ["period"] { return .frequency }
         if has("date") || word("day", "posted", "when") { return .date }
         if words == ["type"] || has("income/expense", "in/out", "income or expense") { return .type }
-        if has("item", "description", "name", "payee", "merchant", "details") { return .name }
+        if has("item", "description", "name", "payee", "paid to", "pay to", "merchant", "vendor", "biller", "creditor", "details") { return .name }
         if has("category", "group", "section", "bucket") || word("class") { return .category }
         if has("budget", "planned", "plan", "projected", "estimate", "limit", "goal", "target", "allocated", "allotted") { return .amount(rank: 3) }
         if has("amount", "monthly", "cost", "price", "value", "payment", "$", "weekly", "yearly", "annual", "per month", "per week", "per year") {
@@ -278,7 +280,8 @@ nonisolated enum BudgetImporter {
         }
         guard layout.name != nil, layout.amount != nil || !layout.months.isEmpty || layout.debit != nil || layout.credit != nil else { return nil }
 
-        layout.kind = layout.date != nil && layout.months.isEmpty ? .ledger : .plan
+        // A due-date column means a list of bills, even when another column holds dates (such as payday).
+        layout.kind = layout.date != nil && layout.months.isEmpty && layout.due == nil ? .ledger : .plan
         (layout.period, layout.multiplier) = period(in: context)
         return layout
     }
@@ -359,6 +362,9 @@ nonisolated enum BudgetImporter {
             var item = BudgetImportDraft.Item(kind: kind(name: name, section: group, type: cell(row, layout.type), dueDay: dueDay),
                                               name: name, amount: (abs(amount) * multiplier * 100).rounded() / 100, period: period,
                                               dueDay: dueDay, actual: actual.map(abs))
+            let flags = [frequency, cell(row, layout.type)].map { $0.lowercased().trimmingCharacters(in: .whitespaces) }
+            if flags.contains(where: { ["auto", "autopay", "auto pay", "automatic"].contains($0) }) { item.autoPay = true }
+            else if flags.contains(where: { ["self", "manual", "manually"].contains($0) }) { item.autoPay = false }
             // Bills and income are tracked monthly in the app.
             if item.kind != .budget, item.period != "MONTHLY" {
                 item.amount = (item.monthlyAmount * 100).rounded() / 100
