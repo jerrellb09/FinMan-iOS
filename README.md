@@ -1,6 +1,6 @@
 # FinMan for iOS (standalone)
 
-A native SwiftUI budgeting app that runs entirely on the iPhone. There's no server and no account to create, and your data never leaves the device.
+A native SwiftUI budgeting app that runs entirely on the iPhone. There's no server and no account to create, and your data never leaves the device (except that optional linked banks are read through Teller).
 
 - **Requirements:** Xcode 26+ (built with Xcode 27), iOS 18+, iPhone.
 - **No dependencies:** SwiftUI, SwiftData, Swift Charts, LocalAuthentication, and FoundationModels (optional, iOS 26+).
@@ -26,10 +26,39 @@ Run it now with `launchctl kickstart -k gui/$(id -u)/com.jerrell.finman-ios-refr
 
 The job builds from its own git worktree at `~/Library/Developer/FinManRefresh/source`, so switching branches in the repo doesn't affect it. It needs the Mac awake and logged in (a run missed during sleep happens on wake) and the iPhone reachable on the same Wi-Fi. The first run may ask to let `codesign` use your keychain; choose **Always Allow**.
 
+## Bank connections (Teller)
+
+FinMan can link bank accounts through [Teller](https://teller.io) and pull in balances and transactions. The bank login (including the bank's own OAuth page) happens inside Teller Connect; FinMan only receives an access token, which it keeps in the Keychain on this iPhone. Linked accounts appear alongside your manual ones, their balances match the bank after each sync, and new transactions are auto-categorized. Sync runs when the app opens (at most every 4 hours), on pull-to-refresh in Activity, and from Profile → Linked banks.
+
+> ⚠️ **Personal builds only.** The Teller client certificate and private key are bundled into the app, so anyone with a copy of the build could extract them. Before distributing the app (TestFlight, App Store or sharing a build), move the certificate to a server-side proxy, delete `FinManApp/Secrets/`, and rotate the certificate in the Teller dashboard.
+
+One-time setup:
+1. Sign up at [teller.io](https://teller.io) (free). In the dashboard, copy your **Application ID** and download your **certificate** (`certificate.pem` and `private_key.pem`).
+2. Create `FinManApp/Secrets/` (it's git-ignored) and bundle the certificate. Use macOS's `/usr/bin/openssl`; with Homebrew OpenSSL 3, add `-legacy` so iOS can read the file:
+   ```sh
+   mkdir -p FinManApp/Secrets
+   /usr/bin/openssl pkcs12 -export -in certificate.pem -inkey private_key.pem \
+     -out FinManApp/Secrets/teller.p12 -passout pass:choose-a-password
+   ```
+3. Add `FinManApp/Secrets/Teller.plist`:
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0"><dict>
+     <key>ApplicationID</key><string>app_xxxxxxxx</string>
+     <!-- sandbox (fake data), development (real banks, free up to 100), or production -->
+     <key>Environment</key><string>sandbox</string>
+     <key>CertificatePassword</key><string>choose-a-password</string>
+   </dict></plist>
+   ```
+4. Rebuild. Profile → Accounts → **Linked banks** → Connect a bank. In sandbox, sign in with `username` / `password`. Switch `Environment` to `development` for your real banks.
+
+Without `Teller.plist` the Linked banks screen is hidden. `scripts/refresh-on-device.sh` copies `FinManApp/Secrets/` from the repo into its build worktree, so scheduled refreshes keep bank sync working.
+
 ## How it works
 
 - **Storage:** SwiftData models (`Account`, `Category`, `Transaction`, `Budget`, `Bill`) live in `Models/Models.swift`. The profile (name, income, payday) and settings live in `@AppStorage`. Every property has a default and every relationship is optional, so turning on iCloud (CloudKit) sync later only needs the iCloud capability and a container.
-- **Balances:** an account's balance is its starting balance plus every transaction logged against it.
+- **Balances:** an account's balance is its starting balance plus every transaction logged against it. For linked accounts, each sync resets the starting balance so the total matches the bank.
 - **Budgets:** net spending in the budget's category during the current week, month or year. Refunds offset it.
 - **Bills:** recurring bills count as paid only for the month they were marked paid, so they reset automatically each month.
 - **Money coach:** uses Apple's on-device language model (Apple Intelligence, iOS 26+) when it's available, and falls back to rule-based tips otherwise. See `Core/Coach.swift`.
@@ -41,6 +70,7 @@ The job builds from its own git worktree at `~/Library/Developer/FinManRefresh/s
 FinManApp/
   App/            entry point, model container, lock, tabs
   Core/           AppState, DataStore (seed/sample/export/erase), Analytics, Coach, Face ID lock
+  Core/Banking/   Teller client (mTLS), Keychain token store, bank sync
   Models/         SwiftData models
   DesignSystem/   theme, category styles, cards, ring/progress gauges, confetti
   Features/       Onboarding, Dashboard, Transactions, Budgets, Bills, Insights, Settings

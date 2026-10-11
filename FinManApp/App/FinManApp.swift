@@ -68,6 +68,8 @@ enum AppTab: Hashable { case home, activity, budgets, bills, insights }
 
 struct MainTabView: View {
     @Environment(AppState.self) private var state
+    @Environment(\.modelContext) private var context
+    @Environment(\.scenePhase) private var scenePhase
     @Query private var bills: [Bill]
     @State private var tab: AppTab = Self.launchTab
 
@@ -108,6 +110,10 @@ struct MainTabView: View {
             }
         }
         .sensoryFeedback(.selection, trigger: tab)
+        // Quietly refresh linked banks when the app opens or comes back after a few hours.
+        .task(id: scenePhase) {
+            if scenePhase == .active { await BankSync.syncIfStale(context: context) }
+        }
         .overlay(alignment: .top) {
             if let error = state.lastError {
                 ErrorBanner(message: error) { withAnimation { state.lastError = nil } }

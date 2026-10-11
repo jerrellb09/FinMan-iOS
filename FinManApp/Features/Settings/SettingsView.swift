@@ -64,7 +64,8 @@ struct SettingsView: View {
                                 Image(systemName: account.symbol).foregroundStyle(Theme.brand).frame(width: 24)
                                 VStack(alignment: .leading) {
                                     Text(account.name)
-                                    Text(account.kind.capitalized).font(.caption).foregroundStyle(.secondary)
+                                    Text(account.isLinked ? "\(account.kind.capitalized) · Linked" : account.kind.capitalized)
+                                        .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 Text(account.balance.currency()).monospacedDigit()
@@ -77,10 +78,13 @@ struct SettingsView: View {
                         try? context.save()
                     }
                     Button { showNewAccount = true } label: { Label("Add account", systemImage: "plus") }
+                    if BankSync.isAvailable {
+                        NavigationLink { BanksView() } label: { Label("Linked banks", systemImage: "building.columns") }
+                    }
                 } header: {
                     Text("Accounts")
                 } footer: {
-                    Text("Balances are your starting balance plus everything you've logged.")
+                    Text("Balances are your starting balance plus everything you've logged. Linked accounts match your bank's balance each time they sync.")
                 }
 
                 Section("Security") {
@@ -108,7 +112,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Your data")
                 } footer: {
-                    Text("Everything is stored privately on this iPhone. \(transactions.count) transactions.")
+                    Text("Everything is stored privately on this iPhone\(BankSync.isAvailable ? "; linked banks are read through Teller" : ""). \(transactions.count) transactions.")
                 }
             }
             .navigationTitle("Profile")
@@ -156,8 +160,14 @@ struct AccountEditor: View {
                     Text("Credit card").tag("credit")
                     Text("Cash").tag("cash")
                 }
-                TextField("Starting balance", value: $startingBalance, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
-                    .keyboardType(.numbersAndPunctuation)
+                if account?.isLinked == true {
+                    LabeledContent("Balance", value: account?.balance.currency() ?? "")
+                    Text("Kept in step with \(account?.institution ?? "your bank") on every sync.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } else {
+                    TextField("Starting balance", value: $startingBalance, format: .currency(code: Locale.current.currency?.identifier ?? "USD"))
+                        .keyboardType(.numbersAndPunctuation)
+                }
             }
             .navigationTitle(account == nil ? "New account" : "Edit account")
             .navigationBarTitleDisplayMode(.inline)

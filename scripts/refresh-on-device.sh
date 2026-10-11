@@ -77,6 +77,13 @@ if [[ ! -e "$SRC/.git" ]]; then
 fi
 git -C "$SRC" checkout --quiet --force --detach "$BRANCH" || fail "Couldn't check out $BRANCH."
 echo "Building $BRANCH @ $(git -C "$SRC" rev-parse --short HEAD)"
+# Git-ignored Teller credentials aren't in the worktree; copy them in so bank sync keeps working.
+rm -rf "$SRC/FinManApp/Secrets"
+if [[ -d "$REPO/FinManApp/Secrets" ]]; then
+  cp -R "$REPO/FinManApp/Secrets" "$SRC/FinManApp/Secrets"
+else
+  echo "Note: no FinManApp/Secrets in $REPO; building without bank connections."
+fi
 
 # 2. Find the iPhone (must be paired with this Mac: cable, or 'Connect via network').
 if [[ -z "$DEVICE_UDID" ]]; then

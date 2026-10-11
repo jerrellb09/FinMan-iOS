@@ -11,6 +11,12 @@ final class Account {
     var kind: String = "checking"
     var startingBalance: Double = 0
     var createdAt: Date = Date.now
+    /// Set for accounts linked through Teller; their balance is kept in step with the bank on every sync.
+    var tellerAccountID: String?
+    var enrollmentID: String?
+    var institution: String?
+    var lastFour: String?
+    var lastSynced: Date?
 
     @Relationship(deleteRule: .nullify, inverse: \Transaction.account)
     var transactions: [Transaction]? = []
@@ -20,6 +26,8 @@ final class Account {
         self.kind = kind
         self.startingBalance = startingBalance
     }
+
+    var isLinked: Bool { tellerAccountID != nil }
 
     var balance: Double { startingBalance + (transactions ?? []).reduce(0) { $0 + $1.amount } }
 
@@ -74,6 +82,9 @@ final class Transaction {
     var category: Category?
     var account: Account?
     var createdAt: Date = Date.now
+    /// Teller transaction ID for transactions synced from a bank.
+    var externalID: String?
+    var isPending: Bool = false
 
     init(title: String, amount: Double, date: Date = .now, category: Category? = nil, account: Account? = nil) {
         self.title = title

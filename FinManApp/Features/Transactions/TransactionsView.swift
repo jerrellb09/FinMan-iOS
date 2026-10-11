@@ -3,6 +3,7 @@ import SwiftUI
 
 struct TransactionsView: View {
     @Environment(\.modelContext) private var context
+    @Environment(AppState.self) private var state
     @Query(sort: \Transaction.date, order: .reverse) private var transactions: [Transaction]
 
     enum Filter: String, CaseIterable, Identifiable {
@@ -91,6 +92,11 @@ struct TransactionsView: View {
             }
             .listStyle(.insetGrouped)
             .searchable(text: $search, prompt: "Search transactions")
+            .refreshable {
+                guard BankSync.isAvailable else { return }
+                let failures = await BankSync.syncAll(context: context)
+                if !failures.isEmpty { state.lastError = failures.joined(separator: "\n") }
+            }
             .navigationTitle("Activity")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -143,6 +149,7 @@ struct TransactionsView: View {
     }
 
     private func delete(_ tx: Transaction) {
+        BankSync.hide(tx)
         withAnimation { context.delete(tx) }
         try? context.save()
         deleteTrigger += 1
@@ -165,6 +172,10 @@ struct TransactionRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(transaction.title).font(.subheadline.weight(.semibold)).lineLimit(1)
                 HStack(spacing: 4) {
+                    if transaction.isPending {
+                        Text("Pending").foregroundStyle(Theme.warning)
+                        Text("·")
+                    }
                     Text(transaction.category?.name ?? "Uncategorized")
                     if let account = transaction.account?.name {
                         Text("·")

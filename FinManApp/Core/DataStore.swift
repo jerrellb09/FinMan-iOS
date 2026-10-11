@@ -27,6 +27,7 @@ enum DataStore {
         try? context.delete(model: Account.self)
         try? context.delete(model: Category.self)
         try? context.save()
+        BankSync.reset()
         seedCategoriesIfNeeded(context)
     }
 
