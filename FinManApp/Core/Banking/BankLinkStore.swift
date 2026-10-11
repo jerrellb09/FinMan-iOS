@@ -1,19 +1,21 @@
 import Foundation
 import Security
 
-/// One Teller enrollment: a login at one bank, which can cover several accounts.
+/// One Plaid Item: a login at one bank, which can cover several accounts.
 nonisolated struct BankLink: Codable, Identifiable, Hashable, Sendable {
-    /// Teller enrollment ID.
+    /// Plaid item ID.
     let id: String
     var institution: String
     var accessToken: String
     var connectedAt: Date = .now
+    /// Where the last `/transactions/sync` left off; nil until the first full sync.
+    var cursor: String?
 }
 
 /// Bank access tokens, kept in the Keychain (this device only, never backed up or synced).
 nonisolated enum BankLinkStore {
     private static let service = "finman.bank-links"
-    private static let account = "teller"
+    private static let account = "plaid"
 
     static func all() -> [BankLink] {
         let query: [String: Any] = [
@@ -27,7 +29,7 @@ nonisolated enum BankLinkStore {
         return (try? JSONDecoder().decode([BankLink].self, from: data)) ?? []
     }
 
-    /// Adds the link, or replaces the stored one with the same enrollment ID (after a reconnect).
+    /// Adds the link, or replaces the stored one with the same item ID (e.g. to save a new cursor).
     static func save(_ link: BankLink) {
         var links = all().filter { $0.id != link.id }
         links.append(link)

@@ -112,7 +112,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Your data")
                 } footer: {
-                    Text("Everything is stored privately on this iPhone\(BankSync.isAvailable ? "; linked banks are read through Teller" : ""). \(transactions.count) transactions.")
+                    Text("Everything is stored privately on this iPhone\(BankSync.isAvailable ? "; linked banks are read through Plaid" : ""). \(transactions.count) transactions.")
                 }
             }
             .navigationTitle("Profile")

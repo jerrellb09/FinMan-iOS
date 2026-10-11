@@ -1,6 +1,6 @@
 # FinMan for iOS (standalone)
 
-A native SwiftUI budgeting app that runs entirely on the iPhone. There's no server and no account to create, and your data never leaves the device (except that optional linked banks are read through Teller).
+A native SwiftUI budgeting app that runs entirely on the iPhone. There's no server and no account to create, and your data never leaves the device (except that optional linked banks are read through Plaid).
 
 - **Requirements:** Xcode 26+ (built with Xcode 27), iOS 18+, iPhone.
 - **No dependencies:** SwiftUI, SwiftData, Swift Charts, LocalAuthentication, and FoundationModels (optional, iOS 26+).
@@ -26,34 +26,30 @@ Run it now with `launchctl kickstart -k gui/$(id -u)/com.jerrell.finman-ios-refr
 
 The job builds from its own git worktree at `~/Library/Developer/FinManRefresh/source`, so switching branches in the repo doesn't affect it. It needs the Mac awake and logged in (a run missed during sleep happens on wake) and the iPhone reachable on the same Wi-Fi. The first run may ask to let `codesign` use your keychain; choose **Always Allow**.
 
-## Bank connections (Teller)
+## Bank connections (Plaid)
 
-FinMan can link bank accounts through [Teller](https://teller.io) and pull in balances and transactions. The bank login (including the bank's own OAuth page) happens inside Teller Connect; FinMan only receives an access token, which it keeps in the Keychain on this iPhone. Linked accounts appear alongside your manual ones, their balances match the bank after each sync, and new transactions are auto-categorized. Sync runs when the app opens (at most every 4 hours), on pull-to-refresh in Activity, and from Profile → Linked banks.
+FinMan can link bank accounts through [Plaid](https://plaid.com) and pull in balances and transactions. Tapping **Connect a bank** opens Plaid Hosted Link in a secure Safari sheet, where you pick your bank and sign in (including the bank's own OAuth page). FinMan only receives an access token, which it keeps in the Keychain on this iPhone. Linked accounts appear alongside your manual ones, their balances match the bank after each sync, and new transactions are auto-categorized. Sync runs when the app opens (at most every 4 hours), on pull-to-refresh in Activity, and from Profile → Linked banks. Plaid itself refreshes bank data roughly 1–4 times a day.
 
-> ⚠️ **Personal builds only.** The Teller client certificate and private key are bundled into the app, so anyone with a copy of the build could extract them. Before distributing the app (TestFlight, App Store or sharing a build), move the certificate to a server-side proxy, delete `FinManApp/Secrets/`, and rotate the certificate in the Teller dashboard.
+Hosted Link is used instead of Plaid's iOS SDK because the SDK needs Universal Links (Associated Domains) for OAuth banks, which a free Apple ID can't set up.
+
+> ⚠️ **Personal builds only.** The Plaid client ID and secret are bundled into the app, so anyone with a copy of the build could extract them. Before distributing the app (TestFlight, App Store or sharing a build), move the calls that use the secret to a server, delete `FinManApp/Secrets/`, and rotate the secret in the Plaid dashboard.
 
 One-time setup:
-1. Sign up at [teller.io](https://teller.io) (free). In the dashboard, copy your **Application ID** and download your **certificate** (`certificate.pem` and `private_key.pem`).
-2. Create `FinManApp/Secrets/` (it's git-ignored) and bundle the certificate. Use macOS's `/usr/bin/openssl`; with Homebrew OpenSSL 3, add `-legacy` so iOS can read the file:
-   ```sh
-   mkdir -p FinManApp/Secrets
-   /usr/bin/openssl pkcs12 -export -in certificate.pem -inkey private_key.pem \
-     -out FinManApp/Secrets/teller.p12 -passout pass:choose-a-password
-   ```
-3. Add `FinManApp/Secrets/Teller.plist`:
+1. Sign up at [dashboard.plaid.com](https://dashboard.plaid.com) (free). Under Developers → Keys, copy your **client_id** and the **Sandbox** secret. For real banks, request the free **Trial** plan for Production access and copy the **Production** secret once it's approved.
+2. Create `FinManApp/Secrets/Plaid.plist` (the folder is git-ignored):
    ```xml
    <?xml version="1.0" encoding="UTF-8"?>
    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
    <plist version="1.0"><dict>
-     <key>ApplicationID</key><string>app_xxxxxxxx</string>
-     <!-- sandbox (fake data), development (real banks, free up to 100), or production -->
+     <key>ClientID</key><string>your-client-id</string>
+     <key>Secret</key><string>your-secret</string>
+     <!-- sandbox (test data) or production (real banks; the free Trial plan) -->
      <key>Environment</key><string>sandbox</string>
-     <key>CertificatePassword</key><string>choose-a-password</string>
    </dict></plist>
    ```
-4. Rebuild. Profile → Accounts → **Linked banks** → Connect a bank. In sandbox, sign in with `username` / `password`. Switch `Environment` to `development` for your real banks.
+3. Rebuild. Profile → Accounts → **Linked banks** → Connect a bank. In sandbox, sign in with `user_good` / `pass_good`; try "Platypus OAuth Bank" too, to check the OAuth flow. Switch `Environment` (and the secret) to production for your real banks.
 
-Without `Teller.plist` the Linked banks screen is hidden. `scripts/refresh-on-device.sh` copies `FinManApp/Secrets/` from the repo into its build worktree, so scheduled refreshes keep bank sync working.
+Without `Plaid.plist` the Linked banks screen is hidden. `scripts/refresh-on-device.sh` copies `FinManApp/Secrets/` from the repo into its build worktree, so scheduled refreshes keep bank sync working.
 
 ## How it works
 
@@ -70,7 +66,7 @@ Without `Teller.plist` the Linked banks screen is hidden. `scripts/refresh-on-de
 FinManApp/
   App/            entry point, model container, lock, tabs
   Core/           AppState, DataStore (seed/sample/export/erase), Analytics, Coach, Face ID lock
-  Core/Banking/   Teller client (mTLS), Keychain token store, bank sync
+  Core/Banking/   Plaid client, Keychain token store, bank sync
   Models/         SwiftData models
   DesignSystem/   theme, category styles, cards, ring/progress gauges, confetti
   Features/       Onboarding, Dashboard, Transactions, Budgets, Bills, Insights, Settings

@@ -11,9 +11,10 @@ final class Account {
     var kind: String = "checking"
     var startingBalance: Double = 0
     var createdAt: Date = Date.now
-    /// Set for accounts linked through Teller; their balance is kept in step with the bank on every sync.
-    var tellerAccountID: String?
-    var enrollmentID: String?
+    /// Set for accounts linked through Plaid; their balance is kept in step with the bank on every sync.
+    var bankAccountID: String?
+    /// The Plaid item (bank login) this account came from.
+    var bankLinkID: String?
     var institution: String?
     var lastFour: String?
     var lastSynced: Date?
@@ -27,7 +28,7 @@ final class Account {
         self.startingBalance = startingBalance
     }
 
-    var isLinked: Bool { tellerAccountID != nil }
+    var isLinked: Bool { bankAccountID != nil }
 
     var balance: Double { startingBalance + (transactions ?? []).reduce(0) { $0 + $1.amount } }
 
@@ -82,7 +83,7 @@ final class Transaction {
     var category: Category?
     var account: Account?
     var createdAt: Date = Date.now
-    /// Teller transaction ID for transactions synced from a bank.
+    /// Plaid transaction ID for transactions synced from a bank.
     var externalID: String?
     var isPending: Bool = false
 

@@ -77,7 +77,7 @@ if [[ ! -e "$SRC/.git" ]]; then
 fi
 git -C "$SRC" checkout --quiet --force --detach "$BRANCH" || fail "Couldn't check out $BRANCH."
 echo "Building $BRANCH @ $(git -C "$SRC" rev-parse --short HEAD)"
-# Git-ignored Teller credentials aren't in the worktree; copy them in so bank sync keeps working.
+# Git-ignored Plaid credentials aren't in the worktree; copy them in so bank sync keeps working.
 rm -rf "$SRC/FinManApp/Secrets"
 if [[ -d "$REPO/FinManApp/Secrets" ]]; then
   cp -R "$REPO/FinManApp/Secrets" "$SRC/FinManApp/Secrets"

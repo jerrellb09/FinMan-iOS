@@ -1,26 +1,33 @@
 import Foundation
 import SwiftData
 
-/// Pulls accounts, balances and transactions from Teller into the SwiftData store.
+/// Pulls accounts, balances and transactions from Plaid into the SwiftData store.
 enum BankSync {
     private static let hiddenKey = "bank.hiddenTransactionIDs"
     private static let lastSyncKey = "bank.lastSync"
     private static let errorsKey = "bank.errors"
-    /// How far back each sync re-reads, so pending transactions that posted or vanished get updated.
-    private static let overlap: TimeInterval = 14 * 86_400
 
-    static var isAvailable: Bool { TellerConfig.shared != nil }
+    static var isAvailable: Bool { PlaidConfig.shared != nil }
     static var lastSync: Date? { UserDefaults.standard.object(forKey: lastSyncKey) as? Date }
 
-    /// The last sync error per enrollment ID, shown on the Linked banks screen until a sync succeeds.
+    /// The last sync error per item ID, shown on the Linked banks screen until a sync succeeds.
     static var errors: [String: String] {
         UserDefaults.standard.dictionary(forKey: errorsKey) as? [String: String] ?? [:]
     }
 
-    /// Stores a new (or repaired) enrollment and runs its first sync.
-    static func connect(_ link: BankLink, context: ModelContext) async throws {
+    /// Exchanges a finished Hosted Link session's public token and runs the first sync.
+    /// Returns false when Plaid is still gathering the transaction history (balances are in already).
+    @discardableResult
+    static func connect(_ result: PlaidLinkResult, context: ModelContext) async throws -> Bool {
+        let (accessToken, itemID) = try await PlaidClient.exchange(publicToken: result.publicToken)
+        let link = BankLink(id: itemID, institution: result.institution, accessToken: accessToken)
         BankLinkStore.save(link)
-        try await sync(link, context: context)
+        // A brand-new Item usually needs a few seconds before its first transactions are ready.
+        for attempt in 0..<5 {
+            if attempt > 0 { try await Task.sleep(for: .seconds(3)) }
+            if try await sync(BankLinkStore.all().first { $0.id == itemID } ?? link, context: context) { return true }
+        }
+        return false
     }
 
     /// Syncs every linked bank. Returns a message for each one that failed.
@@ -43,40 +50,62 @@ enum BankSync {
         await syncAll(context: context)
     }
 
-    static func sync(_ link: BankLink, context: ModelContext) async throws {
-        let client = TellerClient(accessToken: link.accessToken)
+    /// Updates accounts and balances, then applies every transaction change since the link's cursor.
+    /// Returns false when Plaid doesn't have transactions ready yet.
+    @discardableResult
+    static func sync(_ link: BankLink, context: ModelContext) async throws -> Bool {
         do {
-            for remote in try await client.accounts() where remote.status == "open" {
-                let account = findOrCreateAccount(remote, context: context)
-                let since = account.lastSynced.map { $0.addingTimeInterval(-overlap) }
-                let balance = try await client.balance(accountID: remote.id)
-                let transactions = try await client.transactions(accountID: remote.id, since: since)
-                apply(transactions, balance: balance, to: account, context: context)
+            var accounts: [String: Account] = [:]
+            let remoteAccounts = try await PlaidClient.accounts(accessToken: link.accessToken)
+            for remote in remoteAccounts where remote.type == "depository" || remote.type == "credit" {
+                accounts[remote.accountId] = findOrCreateAccount(remote, link: link, context: context)
+            }
+
+            let changes = try await fetchChanges(link)
+            if let changes {
+                apply(changes, to: accounts, context: context)
             }
             try context.save()
+
+            // Match the bank's balance: startingBalance absorbs history older than what Plaid returns.
+            // Credit cards report the amount owed, which this app shows as a negative balance.
+            for remote in remoteAccounts {
+                guard let account = accounts[remote.accountId], let current = remote.balances.current else { continue }
+                let target = account.kind == "credit" ? -current : current
+                account.startingBalance = target - (account.transactions ?? []).reduce(0) { $0 + $1.amount }
+                account.lastSynced = .now
+            }
+            try context.save()
+
+            if let changes {
+                var updated = link
+                updated.cursor = changes.cursor
+                BankLinkStore.save(updated)
+            }
             setError(nil, for: link.id)
+            return changes != nil
         } catch {
             setError(error.localizedDescription, for: link.id)
             throw error
         }
     }
 
-    /// Forgets the enrollment on this device and asks Teller to revoke access.
+    /// Forgets the link on this device and asks Plaid to revoke it.
     /// When `deleteData` is true the bank's accounts and their transactions are removed too;
     /// otherwise they stay as ordinary manual accounts.
     static func disconnect(_ link: BankLink, deleteData: Bool, context: ModelContext) async {
-        try? await TellerClient(accessToken: link.accessToken).revoke()
+        try? await PlaidClient.removeItem(accessToken: link.accessToken)
         BankLinkStore.remove(id: link.id)
         setError(nil, for: link.id)
         let linkID = link.id
-        let accounts = (try? context.fetch(FetchDescriptor<Account>(predicate: #Predicate { $0.enrollmentID == linkID }))) ?? []
+        let accounts = (try? context.fetch(FetchDescriptor<Account>(predicate: #Predicate { $0.bankLinkID == linkID }))) ?? []
         for account in accounts {
             if deleteData {
                 (account.transactions ?? []).forEach(context.delete)
                 context.delete(account)
             } else {
-                account.tellerAccountID = nil
-                account.enrollmentID = nil
+                account.bankAccountID = nil
+                account.bankLinkID = nil
                 account.lastSynced = nil
                 for tx in account.transactions ?? [] { tx.externalID = nil }
             }
@@ -84,7 +113,7 @@ enum BankSync {
         try? context.save()
     }
 
-    /// Remembers a deleted synced transaction so the next sync doesn't bring it back.
+    /// Remembers a deleted synced transaction so it doesn't come back when it posts.
     static func hide(_ transaction: Transaction) {
         guard let id = transaction.externalID else { return }
         var hidden = Set(UserDefaults.standard.stringArray(forKey: hiddenKey) ?? [])
@@ -98,103 +127,128 @@ enum BankSync {
         [hiddenKey, lastSyncKey, errorsKey].forEach(UserDefaults.standard.removeObject(forKey:))
     }
 
+    // MARK: - Fetching
+
+    private struct Changes {
+        var added: [PlaidTransaction] = []
+        var modified: [PlaidTransaction] = []
+        var removed: [String] = []
+        var cursor = ""
+    }
+
+    /// Every change since the link's cursor, or nil when Plaid has nothing ready yet.
+    private static func fetchChanges(_ link: BankLink) async throws -> Changes? {
+        restart: for _ in 0..<3 {
+            var changes = Changes(cursor: link.cursor ?? "")
+            while true {
+                let page: PlaidTransactionsPage
+                do {
+                    page = try await PlaidClient.transactionsPage(accessToken: link.accessToken, cursor: changes.cursor)
+                } catch PlaidError.api(code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION", _) {
+                    // Plaid's data changed mid-way; start again from the original cursor.
+                    continue restart
+                }
+                changes.added += page.added
+                changes.modified += page.modified
+                changes.removed += page.removed.map(\.transactionId)
+                changes.cursor = page.nextCursor
+                if !page.hasMore { break }
+            }
+            return changes.cursor.isEmpty ? nil : changes
+        }
+        throw PlaidError.api(code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION", message: "The bank's data kept changing during sync. Try again in a minute.")
+    }
+
     // MARK: - Mapping
 
-    private static func findOrCreateAccount(_ remote: TellerAccount, context: ModelContext) -> Account {
-        let remoteID = remote.id
-        let existing = try? context.fetch(FetchDescriptor<Account>(predicate: #Predicate { $0.tellerAccountID == remoteID })).first
+    private static func findOrCreateAccount(_ remote: PlaidAccount, link: BankLink, context: ModelContext) -> Account {
+        let remoteID = remote.accountId
+        let existing = try? context.fetch(FetchDescriptor<Account>(predicate: #Predicate { $0.bankAccountID == remoteID })).first
         let account = existing ?? {
-            let institution = remote.institution.name
-            let name = remote.name.localizedCaseInsensitiveContains(institution) ? remote.name : "\(institution) \(remote.name)"
+            let name = remote.name.localizedCaseInsensitiveContains(link.institution) ? remote.name : "\(link.institution) \(remote.name)"
             let account = Account(name: name, kind: kind(for: remote))
-            account.tellerAccountID = remote.id
+            account.bankAccountID = remote.accountId
             context.insert(account)
             return account
         }()
-        account.enrollmentID = remote.enrollmentId
-        account.institution = remote.institution.name
-        account.lastFour = remote.lastFour
+        account.bankLinkID = link.id
+        account.institution = link.institution
+        account.lastFour = remote.mask
         return account
     }
 
-    private static func kind(for remote: TellerAccount) -> String {
+    private static func kind(for remote: PlaidAccount) -> String {
         if remote.type == "credit" { return "credit" }
         switch remote.subtype {
-        case "savings", "money_market", "certificate_of_deposit", "treasury": return "savings"
+        case "savings", "money market", "cd", "hsa", "cash management": return "savings"
         default: return "checking"
         }
     }
 
-    private static func apply(_ remote: [TellerTransaction], balance: TellerBalance, to account: Account, context: ModelContext) {
+    private static func apply(_ changes: Changes, to accounts: [String: Account], context: ModelContext) {
         let hidden = Set(UserDefaults.standard.stringArray(forKey: hiddenKey) ?? [])
         // Looked up across all accounts, so a re-created account picks its old transactions back up.
         let synced = (try? context.fetch(FetchDescriptor<Transaction>(predicate: #Predicate { $0.externalID != nil }))) ?? []
-        let existing = Dictionary(synced.compactMap { tx in tx.externalID.map { ($0, tx) } }, uniquingKeysWith: { first, _ in first })
+        var byID = Dictionary(synced.compactMap { tx in tx.externalID.map { ($0, tx) } }, uniquingKeysWith: { first, _ in first })
         let categories = (try? context.fetch(FetchDescriptor<Category>())) ?? []
         let categoryNames = categories.map(\.name)
 
-        for item in remote where !hidden.contains(item.id) {
-            guard let amount = Double(item.amount), let date = TellerClient.date(item.date) else { continue }
-            if let tx = existing[item.id] {
-                // Keep the user's title, category and note; refresh what the bank can change.
-                tx.amount = amount
-                tx.date = date
-                tx.isPending = item.status == "pending"
+        func update(_ tx: Transaction, from item: PlaidTransaction) {
+            // Keep the user's title, category and note; refresh what the bank can change.
+            tx.amount = -item.amount
+            tx.date = PlaidClient.date(item.date) ?? tx.date
+            tx.isPending = item.pending
+        }
+
+        for item in changes.added {
+            guard let account = accounts[item.accountId], !hidden.contains(item.transactionId) else { continue }
+            if let pendingID = item.pendingTransactionId, hidden.contains(pendingID) { continue }
+            // A posted transaction replacing a pending one keeps the pending one's edits.
+            if let tx = byID[item.transactionId] ?? item.pendingTransactionId.flatMap({ byID.removeValue(forKey: $0) }) {
+                tx.externalID = item.transactionId
                 tx.account = account
+                byID[item.transactionId] = tx
+                update(tx, from: item)
                 continue
             }
             let title = cleanTitle(item)
             let categoryName = CategoryMatcher.match(title).flatMap { CategoryMatcher.existing($0, in: categoryNames) }
-                ?? item.details?.category.flatMap(categoryName(forTeller:)).flatMap { CategoryMatcher.existing($0, in: categoryNames) }
-            let tx = Transaction(title: title, amount: amount, date: date,
+                ?? item.personalFinanceCategory.flatMap(categoryName(forPlaid:)).flatMap { CategoryMatcher.existing($0, in: categoryNames) }
+            let tx = Transaction(title: title, amount: -item.amount, date: PlaidClient.date(item.date) ?? .now,
                                  category: categories.first { $0.name == categoryName }, account: account)
-            tx.externalID = item.id
-            tx.isPending = item.status == "pending"
+            tx.externalID = item.transactionId
+            tx.isPending = item.pending
             context.insert(tx)
+            byID[item.transactionId] = tx
         }
-
-        // Pending transactions that are no longer reported were dropped or re-issued with a new ID.
-        let reported = Set(remote.map(\.id))
-        let oldestFetched = remote.compactMap { TellerClient.date($0.date) }.min() ?? .distantFuture
-        for tx in account.transactions ?? [] where tx.isPending && tx.date >= oldestFetched {
-            if let id = tx.externalID, !reported.contains(id) { context.delete(tx) }
+        for item in changes.modified {
+            if let tx = byID[item.transactionId] { update(tx, from: item) }
         }
-
-        // Match the bank's balance: startingBalance absorbs history older than what Teller returns.
-        // Credit cards report the amount owed, which this app shows as a negative balance.
-        try? context.save()
-        if let ledger = balance.ledger.flatMap(Double.init) {
-            let target = account.kind == "credit" ? -ledger : ledger
-            let logged = (account.transactions ?? []).reduce(0) { $0 + $1.amount }
-            account.startingBalance = target - logged
+        for id in changes.removed {
+            if let tx = byID.removeValue(forKey: id) { context.delete(tx) }
         }
-        account.lastSynced = .now
     }
 
-    /// The merchant name when Teller recognized one, otherwise the bank's description in title case.
-    private static func cleanTitle(_ item: TellerTransaction) -> String {
-        if let name = item.details?.counterparty?.name?.trimmingCharacters(in: .whitespaces), !name.isEmpty {
-            return name.capitalized
-        }
-        let description = item.description.trimmingCharacters(in: .whitespaces)
+    /// The cleaned-up merchant name when Plaid has one, otherwise the bank's description.
+    private static func cleanTitle(_ item: PlaidTransaction) -> String {
+        if let name = item.merchantName?.trimmingCharacters(in: .whitespaces), !name.isEmpty { return name }
+        let description = item.name.trimmingCharacters(in: .whitespaces)
         return description == description.uppercased() ? description.capitalized : description
     }
 
-    private static func categoryName(forTeller category: String) -> String? {
-        switch category {
-        case "dining", "bar", "groceries": "Food"
-        case "fuel", "transport", "transportation": "Transportation"
-        case "utilities", "phone": "Utilities"
-        case "entertainment", "sport": "Entertainment"
-        case "health": "Healthcare"
-        case "education": "Education"
-        case "accommodation": "Travel"
-        case "clothing", "electronics", "shopping", "home": "Shopping"
-        case "software": "Subscriptions"
-        case "income": "Income"
-        case "loan": "Debt"
-        case "investment": "Savings"
-        case "charity": "Personal"
+    /// Plaid's personal finance categories mapped onto the app's defaults.
+    private static func categoryName(forPlaid category: PlaidTransaction.Category) -> String? {
+        switch category.primary {
+        case "INCOME": "Income"
+        case "FOOD_AND_DRINK": "Food"
+        case "TRANSPORTATION": "Transportation"
+        case "TRAVEL": "Travel"
+        case "ENTERTAINMENT": "Entertainment"
+        case "MEDICAL": "Healthcare"
+        case "PERSONAL_CARE": "Personal"
+        case "GENERAL_MERCHANDISE", "HOME_IMPROVEMENT": "Shopping"
+        case "LOAN_PAYMENTS": "Debt"
+        case "RENT_AND_UTILITIES": category.detailed == "RENT_AND_UTILITIES_RENT" ? "Housing" : "Utilities"
         default: nil
         }
     }

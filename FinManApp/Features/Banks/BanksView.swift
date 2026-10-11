@@ -1,32 +1,27 @@
+import AuthenticationServices
 import SwiftData
 import SwiftUI
 
-/// Connect banks through Teller, see what's linked, sync and disconnect.
+/// Connect banks through Plaid, see what's linked, sync and disconnect.
 struct BanksView: View {
     @Environment(\.modelContext) private var context
     @Environment(AppState.self) private var state
+    @Environment(\.webAuthenticationSession) private var webAuthenticationSession
     @Query(sort: \Account.createdAt) private var accounts: [Account]
 
     @State private var links = BankLinkStore.all()
     @State private var errors = BankSync.errors
-    @State private var connecting: ConnectRequest?
     @State private var disconnecting: BankLink?
     @State private var isSyncing = false
 
-    /// A Teller Connect session: a new bank, or repairing an existing enrollment.
-    struct ConnectRequest: Identifiable {
-        var enrollmentID: String?
-        var id: String { enrollmentID ?? "new" }
-    }
-
     var body: some View {
         Form {
-            if let config = TellerConfig.shared {
+            if let config = PlaidConfig.shared {
                 if links.isEmpty {
                     Section {
                         EmptyStateView(emoji: "🏦", title: "No banks linked",
                                        message: "Connect your bank to bring in balances and transactions automatically.",
-                                       actionTitle: "Connect a bank") { connecting = ConnectRequest() }
+                                       actionTitle: "Connect a bank") { Task { await openLink() } }
                             .frame(maxWidth: .infinity)
                             .listRowBackground(Color.clear)
                     }
@@ -36,7 +31,7 @@ struct BanksView: View {
                 }
                 if !links.isEmpty {
                     Section {
-                        Button { connecting = ConnectRequest() } label: { Label("Connect another bank", systemImage: "plus") }
+                        Button { Task { await openLink() } } label: { Label("Connect another bank", systemImage: "plus") }
                     } footer: {
                         Text(BankSync.lastSync.map { "Last synced \($0.formatted(.relative(presentation: .named)))." } ?? "")
                     }
@@ -48,7 +43,7 @@ struct BanksView: View {
             } else {
                 Section {
                     EmptyStateView(emoji: "🔌", title: "Not set up",
-                                   message: "This build has no Teller credentials. Add Secrets/Teller.plist and Secrets/teller.p12 (see the README), then rebuild.")
+                                   message: "This build has no Plaid credentials. Add Secrets/Plaid.plist (see the README), then rebuild.")
                         .frame(maxWidth: .infinity)
                         .listRowBackground(Color.clear)
                 }
@@ -67,19 +62,6 @@ struct BanksView: View {
         }
         .refreshable { await syncAll() }
         .onAppear(perform: reload)
-        .sheet(item: $connecting) { request in
-            if let config = TellerConfig.shared {
-                TellerConnectView(config: config, enrollmentID: request.enrollmentID) { link in
-                    connecting = nil
-                    Task { await connect(link) }
-                } onExit: { message in
-                    connecting = nil
-                    if let message { state.lastError = message }
-                }
-                .ignoresSafeArea(edges: .bottom)
-                .presentationDragIndicator(.visible)
-            }
-        }
         .confirmationDialog("Disconnect \(disconnecting?.institution ?? "bank")?", isPresented: Binding(
             get: { disconnecting != nil }, set: { if !$0 { disconnecting = nil } }
         ), titleVisibility: .visible, presenting: disconnecting) { link in
@@ -88,6 +70,7 @@ struct BanksView: View {
         } message: { _ in
             Text("Keeping history turns its accounts into manual ones that no longer update.")
         }
+        .disabled(isSyncing)
         .overlay {
             if isSyncing && !accounts.contains(where: \.isLinked) {
                 ProgressView("Bringing in your accounts…").padding().background(.regularMaterial, in: .rect(cornerRadius: 16))
@@ -97,7 +80,7 @@ struct BanksView: View {
 
     private func section(for link: BankLink) -> some View {
         Section {
-            ForEach(accounts.filter { $0.enrollmentID == link.id }) { account in
+            ForEach(accounts.filter { $0.bankLinkID == link.id }) { account in
                 HStack {
                     Image(systemName: account.symbol).foregroundStyle(Theme.brand).frame(width: 24)
                     VStack(alignment: .leading) {
@@ -113,7 +96,7 @@ struct BanksView: View {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
                     .foregroundStyle(Theme.warning)
-                Button { connecting = ConnectRequest(enrollmentID: link.id) } label: {
+                Button { Task { await openLink(repairing: link) } } label: {
                     Label("Reconnect", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
@@ -125,24 +108,46 @@ struct BanksView: View {
         }
     }
 
-    private func footer(_ config: TellerConfig) -> String {
-        var text = "Connections go through Teller. Your bank login is entered with Teller and your bank, never stored by FinMan; the access token stays in this iPhone's Keychain."
+    private func footer(_ config: PlaidConfig) -> String {
+        var text = "Connections go through Plaid. Your bank login is entered with Plaid and your bank, never stored by FinMan; the access token stays in this iPhone's Keychain."
         if config.isSandbox {
-            text += "\n\nSandbox mode: pick any bank and sign in with username \"username\" and password \"password\" to get test data."
-        } else if !config.hasCertificate {
-            text += "\n\nThe Teller certificate is missing, so syncing will fail. Add Secrets/teller.p12 and rebuild."
+            text += "\n\nSandbox mode: pick any bank and sign in with username \"user_good\" and password \"pass_good\" to get test data."
         }
         return text
     }
 
-    private func connect(_ link: BankLink) async {
+    /// Runs Plaid Hosted Link in a secure browser sheet, then picks up what was connected.
+    /// With `link`, repairs that connection (update mode) instead of adding a new one.
+    private func openLink(repairing link: BankLink? = nil) async {
         isSyncing = true
         defer { isSyncing = false; reload() }
         do {
-            try await BankSync.connect(link, context: context)
-            state.celebrate()
+            let (linkToken, url) = try await PlaidClient.createLinkToken(accessToken: link?.accessToken)
+            // Hosted Link redirects to FinMan's callback scheme whether the user finished or exited,
+            // and closing the sheet throws, so the outcome always comes from Plaid below.
+            _ = try? await webAuthenticationSession.authenticate(
+                using: url, callback: .customScheme(PlaidClient.callbackScheme),
+                preferredBrowserSession: .ephemeral, additionalHeaderFields: [:])
+
+            if let link {
+                try await BankSync.sync(link, context: context)
+                return
+            }
+            var results: [PlaidLinkResult] = []
+            for attempt in 0..<3 where results.isEmpty {
+                if attempt > 0 { try await Task.sleep(for: .seconds(1.5)) }
+                results = try await PlaidClient.linkResults(linkToken: linkToken)
+            }
+            var stillLoading: [String] = []
+            for result in results where try await !BankSync.connect(result, context: context) {
+                stillLoading.append(result.institution)
+            }
+            if !results.isEmpty { state.celebrate() }
+            if !stillLoading.isEmpty {
+                state.lastError = "\(stillLoading.joined(separator: ", ")) is linked. Plaid is still gathering your transactions; pull to refresh in a minute."
+            }
         } catch {
-            state.lastError = "Linked \(link.institution), but the first sync failed: \(error.localizedDescription)"
+            state.lastError = error.localizedDescription
         }
     }
 

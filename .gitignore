@@ -3,5 +3,5 @@ xcuserdata/
 DerivedData/
 .DS_Store
 
-# Teller credentials (bundled into personal builds only; never commit)
+# Plaid credentials (bundled into personal builds only; never commit)
 FinManApp/Secrets/
