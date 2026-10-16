@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import UserNotifications
 
 /// Seeding, sample data, export and reset for the on-device store.
 enum DataStore {
@@ -28,6 +29,8 @@ enum DataStore {
         try? context.delete(model: Category.self)
         try? context.save()
         BankSync.reset()
+        WidgetSync.erase()
+        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
         seedCategoriesIfNeeded(context)
     }
 

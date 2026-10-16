@@ -64,6 +64,21 @@ struct RootView: View {
     }
 }
 
+extension MainTabView {
+    private func refreshWidgetsAndReminders() {
+        WidgetSync.update(context)
+        BillReminders.reschedule(context)
+    }
+
+    /// Bill reminders are on by default; ask for notification permission the first time the main screen shows.
+    private func askForReminderPermissionOnce() async {
+        let askedKey = "settings.billRemindersAsked"
+        guard BillReminders.isEnabled, !UserDefaults.standard.bool(forKey: askedKey) else { return }
+        UserDefaults.standard.set(true, forKey: askedKey)
+        if await BillReminders.requestAuthorization() { BillReminders.reschedule(context) }
+    }
+}
+
 enum AppTab: Hashable { case home, activity, budgets, bills, insights }
 
 struct MainTabView: View {
@@ -110,9 +125,20 @@ struct MainTabView: View {
             }
         }
         .sensoryFeedback(.selection, trigger: tab)
-        // Quietly refresh linked banks when the app opens or comes back after a few hours.
+        // On open and on leaving the app: refresh the widgets and bill reminders so they reflect
+        // any edits, and quietly refresh linked banks when it's been a few hours.
         .task(id: scenePhase) {
-            if scenePhase == .active { await BankSync.syncIfStale(context: context) }
+            switch scenePhase {
+            case .active:
+                refreshWidgetsAndReminders()
+                await askForReminderPermissionOnce()
+                await BankSync.syncIfStale(context: context)
+                refreshWidgetsAndReminders()
+            case .background:
+                refreshWidgetsAndReminders()
+            default:
+                break
+            }
         }
         .overlay(alignment: .top) {
             if let error = state.lastError {

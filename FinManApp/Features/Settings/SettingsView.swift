@@ -13,6 +13,11 @@ struct SettingsView: View {
     @AppStorage(ProfileKey.paydayDay) private var payday = 1
     @AppStorage(ProfileKey.hasOnboarded) private var hasOnboarded = true
     @AppStorage(ProfileKey.faceIDEnabled) private var faceIDEnabled = false
+    @AppStorage(BillReminders.enabledKey) private var remindersEnabled = true
+    @AppStorage(BillReminders.daysBeforeKey) private var reminderDaysBefore = BillReminders.defaultDaysBefore
+    @AppStorage(BillReminders.timeKey) private var reminderTime = BillReminders.defaultTime
+    @State private var notificationsAllowed = true
+    @Query private var bills: [Bill]
 
     @State private var editingAccount: Account?
     @State private var showNewAccount = false
@@ -86,6 +91,43 @@ struct SettingsView: View {
                 } footer: {
                     Text("Balances are your starting balance plus everything you've logged. Linked accounts match your bank's balance each time they sync.")
                 }
+
+                Section {
+                    Toggle(isOn: Binding(get: { remindersEnabled }, set: { newValue in
+                        remindersEnabled = newValue
+                        Task {
+                            if newValue { notificationsAllowed = await BillReminders.requestAuthorization() }
+                            BillReminders.reschedule(bills)
+                        }
+                    })) {
+                        Label("Bill reminders", systemImage: "bell.badge")
+                    }
+                    if remindersEnabled {
+                        Picker("Heads-up", selection: $reminderDaysBefore) {
+                            Text("Due day only").tag(0)
+                            Text("1 day before").tag(1)
+                            Text("2 days before").tag(2)
+                            Text("3 days before").tag(3)
+                            Text("1 week before").tag(7)
+                        }
+                        DatePicker("Time", selection: Binding(
+                            get: { Calendar.current.date(bySettingHour: reminderTime / 60, minute: reminderTime % 60, second: 0, of: .now) ?? .now },
+                            set: { let c = Calendar.current.dateComponents([.hour, .minute], from: $0); reminderTime = (c.hour ?? 9) * 60 + (c.minute ?? 0) }
+                        ), displayedComponents: .hourAndMinute)
+                    }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    if remindersEnabled && !notificationsAllowed {
+                        Text("Notifications are turned off for FinMan. Allow them in the Settings app to get bill reminders.")
+                            .foregroundStyle(Theme.warning)
+                    } else {
+                        Text("A heads-up before each unpaid bill and a reminder on the day it's due. Paid bills are skipped.")
+                    }
+                }
+                .onChange(of: reminderDaysBefore) { BillReminders.reschedule(bills) }
+                .onChange(of: reminderTime) { BillReminders.reschedule(bills) }
+                .task { notificationsAllowed = await BillReminders.isAuthorized() || !remindersEnabled }
 
                 Section("Security") {
                     Toggle(isOn: Binding(get: { faceIDEnabled }, set: { newValue in
