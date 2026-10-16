@@ -1,7 +1,8 @@
 import Foundation
+import Security
 
 // Compiled into both the app and the widget extension. The widget can't open the app's SwiftData
-// store, so the app writes this small snapshot to the shared App Group container instead.
+// store, so the app saves this small snapshot where the widget can read it instead.
 
 /// What the widgets show, as of the last time the app saved it.
 nonisolated struct WidgetSnapshot: Codable, Sendable {
@@ -45,25 +46,40 @@ nonisolated struct WidgetSnapshot: Codable, Sendable {
 
     // MARK: Storage
 
-    static let appGroup = "group.com.jay.home.finmanapp.ios"
+    // Kept in a Keychain item shared by the app and the widget. (An App Group container would be the
+    // usual choice, but a free Apple ID can't register App Group IDs; Keychain sharing works on any team.)
+    // Both targets list the shared access group first in keychain-access-groups, which makes it the
+    // default group for new items, so no team prefix is needed here.
+    private static let service = "finman.widget-snapshot"
 
-    private static var fileURL: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)?
-            .appending(path: "widget-snapshot.json")
+    private static var query: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: "snapshot"]
     }
 
     static func load() -> WidgetSnapshot? {
-        guard let url = fileURL, let data = try? Data(contentsOf: url) else { return nil }
+        var request = query
+        request[kSecReturnData as String] = true
+        var result: AnyObject?
+        guard SecItemCopyMatching(request as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return nil }
         return try? JSONDecoder().decode(WidgetSnapshot.self, from: data)
     }
 
     func save() {
-        guard let url = Self.fileURL, let data = try? JSONEncoder().encode(self) else { return }
-        try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        let update = [kSecValueData as String: data]
+        if SecItemUpdate(Self.query as CFDictionary, update as CFDictionary) == errSecItemNotFound {
+            var item = Self.query
+            item[kSecValueData as String] = data
+            // Readable by the widget whenever the phone has been unlocked once since restarting.
+            item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            SecItemAdd(item as CFDictionary, nil)
+        }
     }
 
     static func erase() {
-        if let url = fileURL { try? FileManager.default.removeItem(at: url) }
+        SecItemDelete(query as CFDictionary)
     }
 }
 

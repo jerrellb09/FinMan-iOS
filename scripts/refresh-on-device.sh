@@ -96,7 +96,9 @@ except Exception:
     devices = []
 for d in devices:
     hw = d.get("hardwareProperties", {})
-    if hw.get("reality") == "physical" and hw.get("platform") == "iOS" and hw.get("udid"):
+    # Right after connecting, a real iPhone can be listed before its details load (no reality/platform yet);
+    # simulators always report "simulated", so anything else with a UDID is the phone.
+    if hw.get("reality", "physical") != "simulated" and hw.get("platform", "iOS") == "iOS" and hw.get("udid"):
         print(hw["udid"])
         break
 PY
