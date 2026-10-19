@@ -112,7 +112,7 @@ if ! xcodebuild \
   -project "$SRC/FinManApp.xcodeproj" \
   -scheme FinManApp \
   -configuration Debug \
-  -destination "id=$DEVICE_UDID" \
+  -destination "generic/platform=iOS" \
   -derivedDataPath "$WORK/DerivedData" \
   -allowProvisioningUpdates \
   -allowProvisioningDeviceRegistration \
