@@ -18,6 +18,24 @@ enum DataStore {
         return try? context.fetch(descriptor).first
     }
 
+    enum ClearKind: String, Identifiable {
+        case transactions, bills, budgets
+        var id: Self { self }
+    }
+
+    /// Deletes every transaction, bill or budget, leaving everything else (accounts, categories, linked banks) alone.
+    /// Records are deleted one by one so accounts and categories drop them from their relationships straight away.
+    static func clear(_ kind: ClearKind, _ context: ModelContext) {
+        switch kind {
+        case .transactions: ((try? context.fetch(FetchDescriptor<Transaction>())) ?? []).forEach(context.delete)
+        case .bills: ((try? context.fetch(FetchDescriptor<Bill>())) ?? []).forEach(context.delete)
+        case .budgets: ((try? context.fetch(FetchDescriptor<Budget>())) ?? []).forEach(context.delete)
+        }
+        try? context.save()
+        if kind == .bills { BillReminders.reschedule(context) }
+        WidgetSync.update(context)
+    }
+
     /// Wipes every record and reseeds the default categories.
     static func eraseAll(_ context: ModelContext) {
         try? context.delete(model: PayslipItem.self)

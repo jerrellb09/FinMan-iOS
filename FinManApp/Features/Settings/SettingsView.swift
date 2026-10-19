@@ -18,6 +18,8 @@ struct SettingsView: View {
     @AppStorage(BillReminders.timeKey) private var reminderTime = BillReminders.defaultTime
     @State private var notificationsAllowed = true
     @Query private var bills: [Bill]
+    @Query private var budgets: [Budget]
+    @State private var clearing: DataStore.ClearKind?
 
     @State private var editingAccount: Account?
     @State private var showNewAccount = false
@@ -152,6 +154,16 @@ struct SettingsView: View {
                     Button { showDuplicates = true } label: { Label("Find duplicate transactions", systemImage: "square.on.square") }
                     NavigationLink { CategoriesView() } label: { Label("Categories", systemImage: "tag") }
                     Button { confirmSample = true } label: { Label("Add sample data", systemImage: "wand.and.stars") }
+                    Menu {
+                        Button(role: .destructive) { clearing = .transactions } label: { Label("All transactions (\(transactions.count))", systemImage: "list.bullet") }
+                            .disabled(transactions.isEmpty)
+                        Button(role: .destructive) { clearing = .bills } label: { Label("All bills (\(bills.count))", systemImage: "calendar.badge.clock") }
+                            .disabled(bills.isEmpty)
+                        Button(role: .destructive) { clearing = .budgets } label: { Label("All budgets (\(budgets.count))", systemImage: "chart.pie") }
+                            .disabled(budgets.isEmpty)
+                    } label: {
+                        Label("Clear…", systemImage: "eraser").foregroundStyle(Theme.expense)
+                    }
                     Button(role: .destructive) { confirmErase = true } label: { Label("Erase all data", systemImage: "trash") }
                 } header: {
                     Text("Your data")
@@ -171,6 +183,12 @@ struct SettingsView: View {
             } message: {
                 Text("Adds three months of example transactions, budgets and bills alongside your own.")
             }
+            .confirmationDialog(clearTitle, isPresented: Binding(get: { clearing != nil }, set: { if !$0 { clearing = nil } }),
+                                titleVisibility: .visible, presenting: clearing) { kind in
+                Button("Delete \(clearCount(kind)) \(kind.rawValue)", role: .destructive) { DataStore.clear(kind, context) }
+            } message: { kind in
+                Text(clearMessage(kind))
+            }
             .confirmationDialog("Erase everything?", isPresented: $confirmErase, titleVisibility: .visible) {
                 Button("Erase all data", role: .destructive) {
                     DataStore.eraseAll(context)
@@ -182,6 +200,33 @@ struct SettingsView: View {
                 Text("This permanently deletes all accounts, transactions, budgets and bills on this iPhone.")
             }
             .task(id: transactions.count) { exportURL = DataStore.exportCSV(transactions) }
+        }
+    }
+    private var clearTitle: String {
+        switch clearing {
+        case .transactions: "Clear all transactions?"
+        case .bills: "Clear all bills?"
+        case .budgets: "Clear all budgets?"
+        case nil: ""
+        }
+    }
+
+    private func clearCount(_ kind: DataStore.ClearKind) -> Int {
+        switch kind {
+        case .transactions: transactions.count
+        case .bills: bills.count
+        case .budgets: budgets.count
+        }
+    }
+
+    private func clearMessage(_ kind: DataStore.ClearKind) -> String {
+        switch kind {
+        case .transactions:
+            "Permanently deletes every transaction, including imported ones. Accounts, bills and budgets stay, but account balances go back to their starting balance."
+        case .bills:
+            "Permanently deletes every bill and its reminders. Transactions and budgets stay."
+        case .budgets:
+            "Permanently deletes every budget. Transactions, categories and bills stay."
         }
     }
 }
