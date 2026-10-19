@@ -25,6 +25,7 @@ struct SettingsView: View {
     @State private var confirmSample = false
     @State private var exportURL: URL?
     @State private var showImport = false
+    @State private var showDuplicates = false
 
     private let currency = Locale.current.currency?.identifier ?? "USD"
 
@@ -147,7 +148,8 @@ struct SettingsView: View {
                     if let exportURL {
                         ShareLink(item: exportURL) { Label("Export transactions (CSV)", systemImage: "square.and.arrow.up") }
                     }
-                    Button { showImport = true } label: { Label("Import budget spreadsheet", systemImage: "tablecells") }
+                    Button { showImport = true } label: { Label("Import transactions or budget", systemImage: "square.and.arrow.down") }
+                    Button { showDuplicates = true } label: { Label("Find duplicate transactions", systemImage: "square.on.square") }
                     NavigationLink { CategoriesView() } label: { Label("Categories", systemImage: "tag") }
                     Button { confirmSample = true } label: { Label("Add sample data", systemImage: "wand.and.stars") }
                     Button(role: .destructive) { confirmErase = true } label: { Label("Erase all data", systemImage: "trash") }
@@ -162,6 +164,7 @@ struct SettingsView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .sheet(isPresented: $showNewAccount) { AccountEditor(account: nil) }
             .spreadsheetImporter(isPresented: $showImport)
+            .sheet(isPresented: $showDuplicates) { DuplicatesView() }
             .sheet(item: $editingAccount) { AccountEditor(account: $0) }
             .confirmationDialog("Add sample data?", isPresented: $confirmSample, titleVisibility: .visible) {
                 Button("Add sample data") { DataStore.loadSampleData(context, monthlyIncome: max(monthlyIncome, 3_000), paydayDay: payday) }

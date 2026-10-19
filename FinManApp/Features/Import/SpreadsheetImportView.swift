@@ -9,11 +9,19 @@ struct SpreadsheetImportModifier: ViewModifier {
     @State private var reading = false
     @State private var error: String?
     @State private var review: Review?
+    @State private var transactionReview: TransactionReview?
 
     struct Review: Identifiable {
         let id = UUID()
         let draft: BudgetImportDraft
         let fileName: String
+    }
+
+    struct TransactionReview: Identifiable {
+        let id = UUID()
+        let export: TransactionExport
+        let fileName: String
+        let existing: [Transaction]
     }
 
     static let types: [UTType] = [.commaSeparatedText, .tabSeparatedText, .plainText]
@@ -35,7 +43,7 @@ struct SpreadsheetImportModifier: ViewModifier {
                 if reading {
                     VStack(spacing: 14) {
                         ProgressView().controlSize(.large)
-                        Text("Reading your spreadsheet…").font(.headline)
+                        Text("Reading your file…").font(.headline)
                         Text(BudgetImporter.isModelAvailable ? "On this iPhone, with Apple Intelligence if needed" : "On this iPhone")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
@@ -46,6 +54,7 @@ struct SpreadsheetImportModifier: ViewModifier {
                 }
             }
             .sheet(item: $review) { SpreadsheetImportView(draft: $0.draft, fileName: $0.fileName) }
+            .sheet(item: $transactionReview) { TransactionImportView(export: $0.export, fileName: $0.fileName, existing: $0.existing) }
             .alert("Couldn't import that file", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -69,7 +78,14 @@ struct SpreadsheetImportModifier: ViewModifier {
         Task {
             defer { reading = false }
             do {
-                let draft = try await BudgetImporter.read(data: data, fileExtension: fileExtension, categories: categories)
+                // Exports from Rocket Money and similar apps get their own review, with duplicate checks.
+                let spreadsheet = try await Self.readSpreadsheet(data, fileExtension: fileExtension)
+                if let export = TransactionImporter.read(spreadsheet, categories: categories), !export.rows.isEmpty {
+                    let existing = (try? context.fetch(FetchDescriptor<Transaction>())) ?? []
+                    transactionReview = TransactionReview(export: export, fileName: fileName, existing: existing)
+                    return
+                }
+                let draft = await BudgetImporter.interpret(spreadsheet, categories: categories)
                 if draft.items.isEmpty && draft.transactions.isEmpty {
                     error = "No budget items or transactions were found. Check the file has a column of names and a column of amounts."
                 } else {
@@ -79,6 +95,13 @@ struct SpreadsheetImportModifier: ViewModifier {
                 self.error = error.localizedDescription
             }
         }
+    }
+}
+
+extension SpreadsheetImportModifier {
+    @concurrent
+    nonisolated static func readSpreadsheet(_ data: Data, fileExtension: String) async throws -> Spreadsheet {
+        try Spreadsheet.read(data: data, fileExtension: fileExtension)
     }
 }
 

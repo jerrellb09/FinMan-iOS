@@ -24,7 +24,7 @@ nonisolated struct Spreadsheet: Sendable {
 
     var sheets: [Sheet]
 
-    private static let maxRows = 5_000
+    private static let maxRows = 50_000
     private static let maxSheets = 10
 
     static func read(data: Data, fileExtension: String) throws -> Spreadsheet {

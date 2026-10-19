@@ -115,7 +115,7 @@ enum BankSync {
 
     /// Remembers a deleted synced transaction so it doesn't come back when it posts.
     static func hide(_ transaction: Transaction) {
-        guard let id = transaction.externalID else { return }
+        guard let id = transaction.externalID, !id.hasPrefix(TransactionImporter.fingerprintPrefix) else { return }
         var hidden = Set(UserDefaults.standard.stringArray(forKey: hiddenKey) ?? [])
         hidden.insert(id)
         UserDefaults.standard.set(Array(hidden), forKey: hiddenKey)

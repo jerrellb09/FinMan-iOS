@@ -18,6 +18,8 @@ struct TransactionsView: View {
     @State private var showNew = false
     @State private var categorizing: Transaction?
     @State private var deleteTrigger = 0
+    @State private var showImport = false
+    @State private var showDuplicates = false
 
     private var filtered: [Transaction] {
         transactions.filter { tx in
@@ -100,6 +102,15 @@ struct TransactionsView: View {
             .navigationTitle("Activity")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button { showImport = true } label: { Label("Import transactions", systemImage: "square.and.arrow.down") }
+                        Button { showDuplicates = true } label: { Label("Find duplicates", systemImage: "square.on.square") }
+                    } label: {
+                        Image(systemName: "ellipsis.circle").font(.title3)
+                    }
+                    .accessibilityLabel("More")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button { showNew = true } label: { Image(systemName: "plus.circle.fill").font(.title3) }
                         .accessibilityLabel("Add transaction")
                 }
@@ -107,6 +118,8 @@ struct TransactionsView: View {
             .sheet(isPresented: $showNew) { TransactionEditor(transaction: nil) }
             .sheet(item: $editing) { TransactionEditor(transaction: $0) }
             .sheet(item: $categorizing) { CategoryPickerSheet(transaction: $0) }
+            .sheet(isPresented: $showDuplicates) { DuplicatesView() }
+            .spreadsheetImporter(isPresented: $showImport)
             .sensoryFeedback(.success, trigger: deleteTrigger)
         }
     }
