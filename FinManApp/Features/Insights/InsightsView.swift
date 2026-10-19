@@ -187,6 +187,13 @@ struct AICoachCard: View {
     @State private var error: String?
     @State private var expanded = false
     @State private var finished = 0
+    @State private var question = ""
+    @State private var chatQuestion: ChatStart?
+
+    struct ChatStart: Identifiable {
+        let id = UUID()
+        let text: String?
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -257,11 +264,43 @@ struct AICoachCard: View {
             }
             .buttonStyle(PressableStyle())
             .disabled(loading)
+
+            // Anything else: opens a conversation with the coach.
+            HStack(spacing: 8) {
+                TextField("", text: $question, prompt: Text("Ask anything about your money…").foregroundStyle(.white.opacity(0.7)))
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                    .tint(.white)
+                    .submitLabel(.send)
+                    .onSubmit(openChat)
+                Button(action: openChat) {
+                    Image(systemName: question.trimmingCharacters(in: .whitespaces).isEmpty ? "bubble.left.and.text.bubble.right.fill" : "arrow.up.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.white)
+                }
+                .accessibilityLabel("Chat with the coach")
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(.white.opacity(0.18), in: .rect(cornerRadius: 14, style: .continuous))
         }
         .padding(18)
         .background(Theme.brandGradient, in: .rect(cornerRadius: 26, style: .continuous))
         .shadow(color: Theme.brand.opacity(0.3), radius: 16, y: 8)
         .sensoryFeedback(.success, trigger: finished)
+        .sheet(item: $chatQuestion) { CoachChatView(initialQuestion: $0.text) }
+        #if DEBUG
+        // `-coachChat "<question>"` opens the chat with that question, for testing.
+        .task {
+            let args = ProcessInfo.processInfo.arguments
+            if let i = args.firstIndex(of: "-coachChat"), i + 1 < args.count { chatQuestion = ChatStart(text: args[i + 1]) }
+        }
+        #endif
+    }
+
+    private func openChat() {
+        let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        chatQuestion = ChatStart(text: text.isEmpty ? nil : text)
+        question = ""
     }
 
     private func ask() async {
