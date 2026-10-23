@@ -4,6 +4,7 @@ import SwiftUI
 /// Chat with the money coach about anything in your finances.
 struct CoachChatView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var context
     @Query private var transactions: [Transaction]
     @Query private var budgets: [Budget]
     @Query private var bills: [Bill]
@@ -24,6 +25,9 @@ struct CoachChatView: View {
         "Can I afford a $500 purchase this month?",
         "Which subscriptions could I cut?",
     ]
+    /// Only the on-device model can propose fixes.
+    private static let fixSuggestion = "Find transactions in the wrong category and fix them"
+
 
     var body: some View {
         NavigationStack {
@@ -33,6 +37,7 @@ struct CoachChatView: View {
                         if chat.messages.isEmpty { intro }
                         ForEach(chat.messages) { message in
                             bubble(message).id(message.id)
+                            if !message.changes.isEmpty { changesCard(message) }
                         }
                     }
                     .padding()
@@ -40,6 +45,9 @@ struct CoachChatView: View {
                 .scrollDismissesKeyboard(.interactively)
                 .onChange(of: chat.messages.last?.text) {
                     if let last = chat.messages.last { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+                .onChange(of: chat.messages.last?.changes.count) {
+                    if let last = chat.messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .top) } }
                 }
             }
             .background(Color(.systemGroupedBackground))
@@ -56,7 +64,7 @@ struct CoachChatView: View {
             .task {
                 chat.configure(snapshot: Coach.Snapshot(name: name, monthlyIncome: monthlyIncome, analytics: Analytics(transactions: transactions),
                                                         budgets: budgets, bills: bills, payslip: payslips.first),
-                               transactions: transactions)
+                               context: context)
                 if let initialQuestion { await chat.send(initialQuestion) } else { inputFocused = true }
             }
         }
@@ -68,10 +76,10 @@ struct CoachChatView: View {
                 .font(.headline)
                 .foregroundStyle(Theme.brand)
             Text(chat.usesModel
-                 ? "Answers use your transactions, bills and budgets, worked out by Apple Intelligence on this iPhone. Nothing leaves your phone."
+                 ? "Answers use your transactions, bills and budgets, worked out by Apple Intelligence on this iPhone. Ask and I can fix transactions and bills too; you approve every change. Nothing leaves your phone."
                  : "Apple Intelligence isn't available, so I can total up a merchant or category you name. Nothing leaves your phone.")
                 .font(.subheadline).foregroundStyle(.secondary)
-            ForEach(Self.suggestions, id: \.self) { suggestion in
+            ForEach(Self.suggestions + (chat.usesModel ? [Self.fixSuggestion] : []), id: \.self) { suggestion in
                 Button { Task { await chat.send(suggestion) } } label: {
                     Text(suggestion)
                         .font(.subheadline)
@@ -114,6 +122,45 @@ struct CoachChatView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.trailing, 32)
         }
+    }
+
+    /// The fixes the coach proposed in one answer, with buttons to apply or dismiss them.
+    private func changesCard(_ message: CoachChat.Message) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(message.changes.count == 1 ? "1 suggested change" : "\(message.changes.count) suggested changes", systemImage: "wand.and.stars")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Theme.brand)
+            ForEach(message.changes) { change in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: change.title).font(.subheadline)
+                    Text(verbatim: change.detail)
+                        .font(.caption)
+                        .foregroundStyle(change.isDelete ? Theme.expense : .secondary)
+                }
+            }
+            switch message.changesState {
+            case .pending:
+                HStack {
+                    Button { withAnimation { chat.applyChanges(in: message.id) } } label: {
+                        Text(message.changes.count == 1 ? "Apply" : "Apply all").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button { withAnimation { chat.dismissChanges(in: message.id) } } label: {
+                        Text("Dismiss").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .disabled(chat.isResponding)
+            case .applied:
+                Label("Applied", systemImage: "checkmark.circle.fill").font(.subheadline).foregroundStyle(Theme.income)
+            case .dismissed:
+                Label("Dismissed, nothing changed", systemImage: "xmark.circle").font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 18, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.trailing, 32)
     }
 
     private var inputBar: some View {

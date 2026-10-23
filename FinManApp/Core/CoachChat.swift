@@ -1,11 +1,14 @@
 import Foundation
 import Observation
+import SwiftData
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
 
 /// A transaction as the coach's tools see it: plain values, safe to read off the main thread.
 nonisolated struct CoachRecord: Sendable {
+    /// Short ID the model uses to name the transaction, like T12.
+    var ref: String
     var date: Date
     var title: String
     /// Positive = income, negative = expense.
@@ -16,14 +19,19 @@ nonisolated struct CoachRecord: Sendable {
 }
 
 /// A free-form conversation with the money coach. Follow-up questions keep the earlier ones in context,
-/// and the model can look up transactions beyond this month's summary through two tools.
+/// and the model can look up transactions beyond this month's summary through two tools. When the user asks, it can also
+/// propose fixes to transactions and bills, which wait in the chat until the user applies them.
 @Observable
 final class CoachChat {
     struct Message: Identifiable {
         enum Role { case user, coach }
+        enum ChangesState { case pending, applied, dismissed }
         let id = UUID()
         let role: Role
         var text: String
+        /// Fixes the coach proposed in this answer. Nothing is saved until the user applies them.
+        var changes: [CoachLedger.Change] = []
+        var changesState = ChangesState.pending
     }
 
     private(set) var messages: [Message] = []
@@ -31,25 +39,34 @@ final class CoachChat {
 
     @ObservationIgnored private var name = ""
     @ObservationIgnored private var summary = ""
-    @ObservationIgnored private var records: [CoachRecord] = []
+    @ObservationIgnored private let ledger = CoachLedger()
     /// The model session (a `LanguageModelSession` on iOS 26+), kept between questions so it remembers the conversation.
     @ObservationIgnored private var session: AnyObject?
 
     var usesModel: Bool { Coach.isOnDeviceModelAvailable }
 
-    func configure(snapshot: Coach.Snapshot, transactions: [Transaction]) {
+    func configure(snapshot: Coach.Snapshot, context: ModelContext) {
         name = snapshot.name
         summary = snapshot.summary
-        records = transactions.map {
-            CoachRecord(date: $0.date, title: $0.title, amount: $0.amount, category: $0.category?.name ?? "Uncategorized",
-                        account: $0.account?.name ?? "", note: $0.note)
-        }
+        ledger.load(context)
         session = nil
     }
 
     func reset() {
         messages = []
+        _ = ledger.takePending()
         session = nil
+    }
+
+    func applyChanges(in messageID: Message.ID) {
+        guard let index = messages.firstIndex(where: { $0.id == messageID }), messages[index].changesState == .pending else { return }
+        ledger.apply(messages[index].changes)
+        messages[index].changesState = .applied
+    }
+
+    func dismissChanges(in messageID: Message.ID) {
+        guard let index = messages.firstIndex(where: { $0.id == messageID }), messages[index].changesState == .pending else { return }
+        messages[index].changesState = .dismissed
     }
 
     func send(_ question: String) async {
@@ -76,10 +93,11 @@ final class CoachChat {
             } catch {
                 messages[index].text = Self.failureText(error)
             }
+            messages[index].changes = ledger.takePending()
             return
         }
         #endif
-        messages[index].text = CoachTools.answerWithoutModel(question, records: records)
+        messages[index].text = CoachTools.answerWithoutModel(question, records: ledger.records)
     }
 
     private static func failureText(_ error: Error) -> String {
@@ -105,7 +123,9 @@ final class CoachChat {
         func iso(_ date: Date) -> String { date.formatted(.iso8601.year().month().day()) }
         let dates = "This month started \(iso(monthStart)); last month ran \(iso(lastMonth)) to \(iso(calendar.date(byAdding: .day, value: -1, to: monthStart) ?? monthStart)). "
             + "\"The last N months\" means from N months before today up to today."
-        return LanguageModelSession(tools: [FindTransactionsTool(records: records), CategoryTotalsTool(records: records)], instructions: """
+        let tools: [any Tool] = [FindTransactionsTool(ledger: ledger), CategoryTotalsTool(ledger: ledger),
+                                 ChangeTransactionTool(ledger: ledger), ChangeBillTool(ledger: ledger)]
+        return LanguageModelSession(tools: tools, instructions: """
             You are a friendly personal finance coach inside a budgeting app called FinMan, chatting with \(name.isEmpty ? "the user" : name).
             Today is \(today). \(dates)
             Answer the user's questions about their money using only the numbers below and what the tools return; \
@@ -113,6 +133,16 @@ final class CoachChat {
             call findTransactions or categoryTotals. Dates are written yyyy-MM-dd.
             Be concise and concrete; use short bullet points when listing things. Never give investment, tax or legal advice; \
             for those, suggest a professional.
+
+            You can also fix their transactions and bills, but only when they ask you to fix, change, correct, recategorize, \
+            rename, mark paid or delete something. Never propose changes when they're only asking a question. \
+            Find transactions with findTransactions, then pass each one's ID (like T12) to changeTransaction; pass a bill's ID \
+            (like B3) to changeBill. Call the tool once per record. Changes wait for the user to tap Apply, so afterwards \
+            briefly list what you proposed.
+
+            Categories: \(ledger.categoryNames.joined(separator: ", "))
+            Bills:
+            \(ledger.billLines.isEmpty ? "none" : ledger.billLines.joined(separator: "\n"))
 
             Their finances this month:
             \(summary)
@@ -126,9 +156,9 @@ final class CoachChat {
 #if canImport(FoundationModels)
 @available(iOS 26.0, *)
 nonisolated struct FindTransactionsTool: Tool {
-    let records: [CoachRecord]
+    let ledger: CoachLedger
     let name = "findTransactions"
-    let description = "Searches the user's transactions by merchant, category, account or note, optionally between two dates. Returns totals, totals by month and the most recent matches."
+    let description = "Searches the user's transactions by merchant, category, account or note, optionally between two dates. Returns totals, totals by month and the most recent matches with their IDs."
 
     @Generable
     struct Arguments {
@@ -141,13 +171,13 @@ nonisolated struct FindTransactionsTool: Tool {
     }
 
     func call(arguments: Arguments) async throws -> String {
-        CoachTools.find(records, search: arguments.search, from: arguments.from, to: arguments.to)
+        CoachTools.find(await ledger.records, search: arguments.search, from: arguments.from, to: arguments.to)
     }
 }
 
 @available(iOS 26.0, *)
 nonisolated struct CategoryTotalsTool: Tool {
-    let records: [CoachRecord]
+    let ledger: CoachLedger
     let name = "categoryTotals"
     let description = "Totals the user's spending by category, and their income, between two dates."
 
@@ -160,7 +190,71 @@ nonisolated struct CategoryTotalsTool: Tool {
     }
 
     func call(arguments: Arguments) async throws -> String {
-        CoachTools.categoryTotals(records, from: arguments.from, to: arguments.to)
+        CoachTools.categoryTotals(await ledger.records, from: arguments.from, to: arguments.to)
+    }
+}
+
+@available(iOS 26.0, *)
+nonisolated struct ChangeTransactionTool: Tool {
+    let ledger: CoachLedger
+    let name = "changeTransaction"
+    let description = "Proposes a fix to one transaction, named by its ID from findTransactions. The user approves it before anything changes. Use only when the user asks you to fix or change something."
+
+    @Generable
+    struct Arguments {
+        @Guide(description: "The transaction's ID from findTransactions, like T12")
+        var id: String
+        @Guide(description: "New name, or empty to keep it")
+        var title: String
+        @Guide(description: "New amount as a positive number, like 12.50, or empty to keep it")
+        var amount: String
+        @Guide(description: "income or expense to change which it is, or empty to keep it")
+        var kind: String
+        @Guide(description: "New date as yyyy-MM-dd, or empty to keep it")
+        var date: String
+        @Guide(description: "New category, exactly one of the user's categories, or empty to keep it")
+        var category: String
+        @Guide(description: "New note, or empty to keep it")
+        var note: String
+        @Guide(description: "true to delete the transaction, such as a duplicate")
+        var delete: Bool
+    }
+
+    func call(arguments: Arguments) async throws -> String {
+        await ledger.proposeTransactionChange(ref: arguments.id, title: arguments.title, amount: arguments.amount, kind: arguments.kind,
+                                              date: arguments.date, category: arguments.category, note: arguments.note, delete: arguments.delete)
+    }
+}
+
+@available(iOS 26.0, *)
+nonisolated struct ChangeBillTool: Tool {
+    let ledger: CoachLedger
+    let name = "changeBill"
+    let description = "Proposes a fix to one bill, named by its ID from the bill list, like B3. The user approves it before anything changes. Use only when the user asks you to fix or change something."
+
+    @Generable
+    struct Arguments {
+        @Guide(description: "The bill's ID, like B3")
+        var id: String
+        @Guide(description: "New name, or empty to keep it")
+        var name: String
+        @Guide(description: "New monthly amount as a positive number, like 79.99, or empty to keep it")
+        var amount: String
+        @Guide(description: "New day of the month it's due, 1 to 31, or empty to keep it")
+        var dueDay: String
+        @Guide(description: "New category, exactly one of the user's categories, or empty to keep it")
+        var category: String
+        @Guide(description: "yes to mark it paid this month, no to mark it unpaid, or empty to keep it")
+        var paid: String
+        @Guide(description: "yes or no to turn autopay on or off, or empty to keep it")
+        var autoPay: String
+        @Guide(description: "true to delete the bill")
+        var delete: Bool
+    }
+
+    func call(arguments: Arguments) async throws -> String {
+        await ledger.proposeBillChange(ref: arguments.id, name: arguments.name, amount: arguments.amount, dueDay: arguments.dueDay,
+                                       category: arguments.category, paid: arguments.paid, autoPay: arguments.autoPay, delete: arguments.delete)
     }
 }
 #endif
@@ -171,7 +265,7 @@ nonisolated enum CoachTools {
         value.formatted(.currency(code: Locale.current.currency?.identifier ?? "USD"))
     }
 
-    private static func day(_ text: String) -> Date? {
+    static func day(_ text: String) -> Date? {
         let parts = text.split(separator: "-").compactMap { Int($0) }
         guard parts.count == 3 else { return nil }
         return Calendar.current.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
@@ -231,7 +325,7 @@ nonisolated enum CoachTools {
             }.joined(separator: "; "))
         }
         lines.append("Most recent: " + matches.prefix(10).map { record in
-            "\(record.date.formatted(.iso8601.year().month().day())) \(record.title) \(money(record.amount)) (\(record.category)\(record.account.isEmpty ? "" : ", \(record.account)"))"
+            "\(record.ref) \(record.date.formatted(.iso8601.year().month().day())) \(record.title) \(money(record.amount)) (\(record.category)\(record.account.isEmpty ? "" : ", \(record.account)"))"
         }.joined(separator: "; "))
         return lines.joined(separator: "\n")
     }
